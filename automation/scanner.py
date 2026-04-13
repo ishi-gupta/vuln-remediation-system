@@ -163,9 +163,11 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
     for target in targets[:3]:  # Limit to avoid excessive scanning
         try:
             cmd = ["pip-audit", "-f", "json", "--desc"]
-            if target.name.startswith("requirements"):
+            if target.suffix == ".txt":
+                # All .txt files (requirements.txt, requirements/base.txt, etc.) are requirement files
                 cmd.extend(["-r", str(target)])
             else:
+                # setup.cfg, pyproject.toml — pass parent directory
                 cmd.extend(["--path", str(target.parent)])
 
             result = subprocess.run(

@@ -139,7 +139,10 @@ def create_github_issues(
         findings, key=lambda f: severity_order.get(f.severity, 3)
     )
 
-    for finding in sorted_findings[:max_issues]:
+    for finding in sorted_findings:
+        if len(created_issues) >= max_issues:
+            break
+
         title = finding.to_issue_title()
 
         # Deduplicate against existing open issues
