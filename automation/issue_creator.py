@@ -97,11 +97,31 @@ def get_existing_issue_titles(repo: str, token: str) -> set[str]:
     return titles
 
 
+def filter_by_severity(
+    findings: list[VulnerabilityFinding],
+    min_severity: str,
+) -> list[VulnerabilityFinding]:
+    """
+    Filter findings to only include those at or above the minimum severity.
+
+    Severity order: critical > high > medium > low.
+    """
+    severity_rank = {
+        Severity.CRITICAL: 0,
+        Severity.HIGH: 1,
+        Severity.MEDIUM: 2,
+        Severity.LOW: 3,
+    }
+    min_rank = severity_rank.get(Severity(min_severity.lower()), 3)
+    return [f for f in findings if severity_rank.get(f.severity, 3) <= min_rank]
+
+
 def create_github_issues(
     findings: list[VulnerabilityFinding],
     repo: Optional[str] = None,
     token: Optional[str] = None,
     max_issues: Optional[int] = None,
+    min_severity: Optional[str] = None,
 ) -> list[dict]:
     """
     Create GitHub Issues for each finding.
@@ -115,6 +135,15 @@ def create_github_issues(
     if not token:
         logger.error("No GITHUB_TOKEN set. Skipping issue creation.")
         return []
+
+    # Apply severity filter before creating issues
+    if min_severity:
+        original_count = len(findings)
+        findings = filter_by_severity(findings, min_severity)
+        logger.info(
+            "Severity filter '%s': %d -> %d findings",
+            min_severity, original_count, len(findings),
+        )
 
     headers = _github_headers(token)
 
@@ -225,12 +254,19 @@ if __name__ == "__main__":
         default=MAX_ISSUES_PER_RUN,
         help=f"Max issues to create (default: {MAX_ISSUES_PER_RUN})",
     )
+    parser.add_argument(
+        "--min-severity",
+        choices=["critical", "high", "medium", "low"],
+        default=None,
+        help="Only create issues for findings at or above this severity level",
+    )
     args = parser.parse_args()
 
     findings = load_findings_from_json(args.input)
     logger.info("Loaded %d findings from %s", len(findings), args.input)
 
     issues = create_github_issues(
-        findings, repo=args.repo, max_issues=args.max_issues
+        findings, repo=args.repo, max_issues=args.max_issues,
+        min_severity=args.min_severity,
     )
     print(f"\nCreated {len(issues)} GitHub Issues")

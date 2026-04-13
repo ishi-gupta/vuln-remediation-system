@@ -69,4 +69,5 @@ jobs:
         run: |
           python -m automation.issue_creator \
             --input scan_results.json \
-            --repo ishi-gupta/superset
+            --repo ishi-gupta/superset \
+            --min-severity high
