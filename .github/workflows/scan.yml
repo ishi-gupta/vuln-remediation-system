@@ -8,6 +8,14 @@ on:
   schedule:
     - cron: "0 0 * * *" # Daily at midnight UTC
   workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repository to scan (owner/repo format)"
+        required: false
+        default: ""
+        type: string
+  repository_dispatch:
+    types: [trigger-vuln-scan]
 
 permissions:
   contents: read
@@ -17,12 +25,24 @@ jobs:
     name: Scan Target Repository
     runs-on: ubuntu-latest
 
+    env:
+      # Priority: repository_dispatch payload > workflow_dispatch input > default
+      TARGET_REPO: >-
+        ${{
+          github.event.client_payload.target_repo
+          || github.event.inputs.target_repo
+          || 'ishi-gupta/superset'
+        }}
+
     steps:
-      - name: Checkout target repo (superset)
+      - name: Print scan target
+        run: echo "Scanning repository:\ ${{ env.TARGET_REPO }}"
+
+      - name: Checkout target repo
         uses: actions/checkout@v4
         with:
-          repository: ishi-gupta/superset
-          path: superset
+          repository: ${{ env.TARGET_REPO }}
+          path: target-repo
           token: ${{ secrets.GH_PAT }}
 
       - name: Checkout vuln-remediation-system
@@ -49,7 +69,7 @@ jobs:
       - name: Run vulnerability scanner
         run: |
           python -m automation.scanner \
-            --target ./superset \
+            --target ./target-repo \
             --output scan_results.json \
             --scanners bandit semgrep pip-audit gitleaks
 
@@ -65,8 +85,8 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_REPO: ishi-gupta/superset
+          GITHUB_REPO: ${{ env.TARGET_REPO }}
         run: |
           python -m automation.issue_creator \
             --input scan_results.json \
-            --repo ishi-gupta/superset
+            --repo "${{ env.TARGET_REPO }}"
