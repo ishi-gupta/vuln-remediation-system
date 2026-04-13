@@ -33,6 +33,7 @@ jobs:
           python -m py_compile automation/issue_creator.py
           python -m py_compile automation/orchestrator.py
           python -m py_compile automation/dashboard.py
+          python -m py_compile automation/adversarial_generator.py
           echo "All Python files compiled successfully"
 
       - name: Verify module imports
