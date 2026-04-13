@@ -44,6 +44,7 @@ jobs:
           python -c "from automation import issue_creator; print('automation.issue_creator OK')"
           python -c "from automation import orchestrator; print('automation.orchestrator OK')"
           python -c "from automation import dashboard; print('automation.dashboard OK')"
+          python -c "from automation import adversarial_generator; print('automation.adversarial_generator OK')"
           echo "All module imports verified"
 
       - name: Run unit tests (if they exist)

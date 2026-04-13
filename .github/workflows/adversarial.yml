@@ -38,7 +38,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install -e .
 
       - name: Create adversarial Devin session
         env:
@@ -80,7 +80,7 @@ jobs:
 
       - name: Install scanner dependencies
         run: |
-          pip install bandit semgrep pip-audit requests
+          pip install -e ".[scanners]"
 
       - name: Install Gitleaks
         run: |

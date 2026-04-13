@@ -511,7 +511,7 @@ def main():
         "--categories",
         nargs="+",
         default=None,
-        help="Vulnerability categories to target (default: all)",
+        help="Vulnerability categories to target (default: all). Accepts space-separated or comma-separated values.",
     )
     parser.add_argument(
         "--test-suite",
@@ -534,6 +534,13 @@ def main():
         help="Evaluate a specific round (for --mode evaluate)",
     )
     args = parser.parse_args()
+
+    # Handle comma-separated categories (e.g., from GitHub Actions input)
+    if args.categories:
+        expanded: list[str] = []
+        for cat in args.categories:
+            expanded.extend(c.strip() for c in cat.split(",") if c.strip())
+        args.categories = expanded
 
     if args.mode == "generate":
         round_id = generate_round_id()
