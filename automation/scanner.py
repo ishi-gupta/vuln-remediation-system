@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -79,19 +79,27 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Semgrep (multi-language SAST) and return normalized findings."""
     findings = []
     try:
+        # Build config args: always use auto rules + custom rules if available
+        config_args = ["--config", "auto"]
+        custom_rules = Path(__file__).parent / "rules"
+        if custom_rules.is_dir():
+            config_args.extend(["--config", str(custom_rules)])
+
         result = subprocess.run(
             [
                 "semgrep", "scan",
-                "--config", "p/security-audit",
+                *config_args,
                 "--json",
-                "--quiet",
                 repo_path,
             ],
             capture_output=True,
             text=True,
             timeout=600,
         )
-        output = result.stdout
+        print(f"[semgrep] returncode={result.returncode}")
+        if result.stderr:
+            print(f"[semgrep] stderr: {result.stderr[:500]}")
+        output = result.stdout or result.stderr
         if output:
             data = json.loads(output)
             for item in data.get("results", []):
@@ -143,10 +151,12 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
     """Run pip-audit (Python SCA) and return normalized findings."""
     findings = []
     req_files = list(Path(repo_path).rglob("requirements*.txt"))
+    req_dir_files = list(Path(repo_path).rglob("requirements/*.txt"))
     setup_files = list(Path(repo_path).rglob("setup.cfg"))
     pyproject_files = list(Path(repo_path).rglob("pyproject.toml"))
 
-    targets = req_files + setup_files + pyproject_files
+    # Deduplicate in case both globs match the same file
+    targets = list(dict.fromkeys(req_files + req_dir_files + setup_files + pyproject_files))
     if not targets:
         return findings
 
@@ -201,6 +211,7 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
 def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Gitleaks (secret detection) and return normalized findings."""
     findings = []
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = tmp.name
@@ -209,6 +220,7 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
             [
                 "gitleaks", "detect",
                 "--source", repo_path,
+                "--no-git",
                 "--report-format", "json",
                 "--report-path", tmp_path,
                 "--no-banner",
@@ -237,9 +249,13 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
                         confidence="high",
                         remediation="Remove the secret from the code and rotate it immediately. Use environment variables or a secret manager instead.",
                     ))
-            os.unlink(tmp_path)
-    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+    except subprocess.TimeoutExpired:
+        print(f"[gitleaks] Warning: scan timed out after 300s")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"[gitleaks] Error: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
     return findings
 
 
@@ -275,7 +291,7 @@ def scan_repo(
         Tuple of (findings list, scan run metadata).
     """
     start_time = time.time()
-    scan_id = hashlib.sha256(f"{repo}:{datetime.utcnow().isoformat()}".encode()).hexdigest()[:12]
+    scan_id = hashlib.sha256(f"{repo}:{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:12]
 
     # Determine repo path
     if os.path.isdir(repo):
