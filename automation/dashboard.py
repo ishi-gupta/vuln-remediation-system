@@ -7,7 +7,7 @@ Observability Dashboard Backend — FastAPI server that provides:
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -72,7 +72,7 @@ def get_github_issues(repo: str, token: str, labels: str = "security,automated")
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/api/metrics")

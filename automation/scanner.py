@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -275,7 +275,7 @@ def scan_repo(
         Tuple of (findings list, scan run metadata).
     """
     start_time = time.time()
-    scan_id = hashlib.sha256(f"{repo}:{datetime.utcnow().isoformat()}".encode()).hexdigest()[:12]
+    scan_id = hashlib.sha256(f"{repo}:{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:12]
 
     # Determine repo path
     if os.path.isdir(repo):

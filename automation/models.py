@@ -3,7 +3,7 @@ Data models for vulnerability findings, remediation records, and system metrics.
 """
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 import hashlib
@@ -157,8 +157,8 @@ class RemediationRecord:
     fix_description: str = ""
     files_changed: list[str] = field(default_factory=list)
     tests_passed: bool = False
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -172,7 +172,7 @@ class ScanRun:
 
     scan_id: str
     target_repo: str
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     scanners_used: list[str] = field(default_factory=list)
     total_findings: int = 0
     critical: int = 0

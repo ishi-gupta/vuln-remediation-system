@@ -5,7 +5,7 @@ and triggers Devin API sessions to fix them.
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -235,7 +235,7 @@ def poll_active_sessions(state: SystemState, api_key: str, token: str, repo: str
 
             session_info["status"] = fix_status
             session_info["pr_url"] = pr_url
-            session_info["updated_at"] = datetime.utcnow().isoformat()
+            session_info["updated_at"] = datetime.now(timezone.utc).isoformat()
 
             if pr_url:
                 comment_on_issue(
@@ -259,7 +259,7 @@ def poll_active_sessions(state: SystemState, api_key: str, token: str, repo: str
 
         elif session_status == "error":
             session_info["status"] = "failed"
-            session_info["updated_at"] = datetime.utcnow().isoformat()
+            session_info["updated_at"] = datetime.now(timezone.utc).isoformat()
             add_label(repo, issue_number, "remediation-failed", token)
             comment_on_issue(
                 repo,
