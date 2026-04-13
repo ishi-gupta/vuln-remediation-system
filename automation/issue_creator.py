@@ -1,177 +1,92 @@
 """
-Issue Creator — takes scanner findings and creates:
-1. A markdown scan report (scan_report.md)
-2. GitHub Issues in the target repository
+Issue Creator — takes scan_results.json (output from scanner) and creates
+GitHub Issues in the target repository.
+
+No standalone markdown report — the dashboard is the presentation layer.
 """
 
 import json
-import os
-from datetime import datetime
-from pathlib import Path
+import logging
 from typing import Optional
 
 import requests
 
-from automation.config import GITHUB_TOKEN, GITHUB_API_BASE, GITHUB_REPO, REPORTS_DIR
-from automation.models import VulnerabilityFinding, Severity, ScanType, ScanRun
+from automation.config import (
+    GITHUB_TOKEN,
+    GITHUB_API_BASE,
+    GITHUB_REPO,
+    MAX_ISSUES_PER_RUN,
+    SEVERITY_LABELS,
+    SCAN_TYPE_LABELS,
+    SYSTEM_LABELS,
+)
+from automation.models import VulnerabilityFinding, Severity, ScanType
+
+logger = logging.getLogger(__name__)
+
+# Label colours — kept in sync with the dashboard expectations.
+LABEL_COLORS: dict[str, str] = {
+    "security": "d73a4a",
+    "automated": "0075ca",
+    "sast": "e4e669",
+    "sca": "f9d0c4",
+    "secret-detection": "b60205",
+    "container": "bfdadc",
+    "iac": "c5def5",
+    "critical": "b60205",
+    "high": "d93f0b",
+    "medium": "fbca04",
+    "low": "0e8a16",
+    "remediation-started": "5319e7",
+    "remediation-failed": "b60205",
+}
 
 
-def generate_md_report(
-    findings: list[VulnerabilityFinding],
-    scan_run: ScanRun,
-    output_path: Optional[str] = None,
-) -> str:
-    """Generate a markdown scan report."""
-    if output_path is None:
-        output_path = str(REPORTS_DIR / f"scan_report_{scan_run.scan_id}.md")
-
-    lines = [
-        "# Vulnerability Scan Report",
-        "",
-        f"**Target:** {scan_run.target_repo}",
-        f"**Date:** {scan_run.timestamp}",
-        f"**Scanners:** {', '.join(scan_run.scanners_used)}",
-        f"**Duration:** {scan_run.duration_seconds:.1f}s",
-        f"**Total Findings:** {scan_run.total_findings}",
-        "",
-        "## Summary",
-        "",
-        "| Severity | Count |",
-        "|----------|-------|",
-        f"| Critical | {scan_run.critical} |",
-        f"| High | {scan_run.high} |",
-        f"| Medium | {scan_run.medium} |",
-        f"| Low | {scan_run.low} |",
-        "",
-        "## Findings by Scanner",
-        "",
-    ]
-
-    # Group by scanner
-    by_scanner: dict[str, list[VulnerabilityFinding]] = {}
-    for f in findings:
-        by_scanner.setdefault(f.scanner, []).append(f)
-
-    for scanner, scanner_findings in by_scanner.items():
-        lines.append(f"| {scanner} | {len(scanner_findings)} |")
-
-    lines.append("")
-
-    # Sort findings by severity
-    severity_order = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
-    sorted_findings = sorted(findings, key=lambda f: severity_order.get(f.severity, 3))
-
-    # Group by severity for detailed listing
-    for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]:
-        sev_findings = [f for f in sorted_findings if f.severity == severity]
-        if not sev_findings:
-            continue
-
-        lines.append(f"## {severity.value.upper()} Findings ({len(sev_findings)})")
-        lines.append("")
-
-        for i, finding in enumerate(sev_findings, 1):
-            vuln_id = finding.cve_id or finding.cwe_id or finding.scanner
-            lines.append(f"### {i}. [{vuln_id}] {finding.title}")
-            lines.append("")
-            lines.append(f"- **Scanner:** {finding.scanner}")
-            lines.append(f"- **Type:** {finding.scan_type.value}")
-            lines.append(f"- **Confidence:** {finding.confidence}")
-
-            if finding.file_path:
-                lines.append(f"- **File:** `{finding.file_path}`")
-            if finding.line_number:
-                lines.append(f"- **Line:** {finding.line_number}")
-            if finding.cwe_id:
-                lines.append(f"- **CWE:** [{finding.cwe_id}](https://cwe.mitre.org/data/definitions/{finding.cwe_id.split('-')[-1]}.html)")
-            if finding.cve_id:
-                lines.append(f"- **CVE:** [{finding.cve_id}](https://nvd.nist.gov/vuln/detail/{finding.cve_id})")
-            if finding.package_name:
-                lines.append(f"- **Package:** `{finding.package_name}=={finding.installed_version}`")
-                if finding.fixed_version:
-                    lines.append(f"- **Fix:** Upgrade to `{finding.fixed_version}`")
-
-            lines.append("")
-            lines.append(f"**Description:** {finding.description}")
-
-            if finding.code_snippet:
-                lines.append("")
-                lines.append("```python")
-                lines.append(finding.code_snippet[:500])
-                lines.append("```")
-
-            if finding.remediation:
-                lines.append("")
-                lines.append(f"**Remediation:** {finding.remediation}")
-
-            lines.append("")
-            lines.append("---")
-            lines.append("")
-
-    lines.append("")
-    lines.append("*Report generated by the Vulnerability Remediation System.*")
-
-    report = "\n".join(lines)
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        f.write(report)
-
-    print(f"[issue_creator] MD report written to {output_path}")
-    return output_path
-
-
-def ensure_labels_exist(repo: str, token: str) -> None:
-    """Create required labels in the GitHub repo if they don't exist."""
-    headers = {
+def _github_headers(token: str) -> dict[str, str]:
+    return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
 
-    label_colors = {
-        "security": "d73a4a",
-        "automated": "0075ca",
-        "sast": "e4e669",
-        "sca": "f9d0c4",
-        "secret-detection": "b60205",
-        "container": "bfdadc",
-        "iac": "c5def5",
-        "critical": "b60205",
-        "high": "d93f0b",
-        "medium": "fbca04",
-        "low": "0e8a16",
-        "remediation-started": "5319e7",
-        "remediation-failed": "b60205",
-    }
 
-    for label_name, color in label_colors.items():
+def ensure_labels_exist(repo: str, token: str) -> None:
+    """Create required labels in the GitHub repo if they don't already exist."""
+    headers = _github_headers(token)
+
+    for label_name, color in LABEL_COLORS.items():
         resp = requests.post(
             f"{GITHUB_API_BASE}/repos/{repo}/labels",
             headers=headers,
             json={"name": label_name, "color": color},
         )
         if resp.status_code == 201:
-            print(f"[issue_creator] Created label: {label_name}")
+            logger.info("Created label: %s", label_name)
         elif resp.status_code == 422:
             pass  # Label already exists
         else:
-            print(f"[issue_creator] Warning: Could not create label {label_name}: {resp.status_code}")
+            logger.warning(
+                "Could not create label %s: %s", label_name, resp.status_code
+            )
 
 
 def get_existing_issue_titles(repo: str, token: str) -> set[str]:
-    """Get titles of existing open issues to avoid duplicates."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
+    """Get titles of existing open issues with security+automated labels to avoid duplicates."""
+    headers = _github_headers(token)
     titles: set[str] = set()
     page = 1
     while True:
         resp = requests.get(
             f"{GITHUB_API_BASE}/repos/{repo}/issues",
             headers=headers,
-            params={"state": "open", "labels": "security,automated", "per_page": 100, "page": page},
+            params={
+                "state": "open",
+                "labels": "security,automated",
+                "per_page": 100,
+                "page": page,
+            },
         )
         if resp.status_code != 200:
+            logger.warning("Failed to fetch existing issues: %s", resp.status_code)
             break
         issues = resp.json()
         if not issues:
@@ -186,38 +101,48 @@ def create_github_issues(
     findings: list[VulnerabilityFinding],
     repo: Optional[str] = None,
     token: Optional[str] = None,
-    max_issues: int = 50,
+    max_issues: Optional[int] = None,
 ) -> list[dict]:
-    """Create GitHub Issues for each finding. Returns list of created issue metadata."""
+    """
+    Create GitHub Issues for each finding.
+
+    Returns a list of dicts with keys: finding_id, issue_number, issue_url, title.
+    """
     repo = repo or GITHUB_REPO
     token = token or GITHUB_TOKEN
+    max_issues = max_issues if max_issues is not None else MAX_ISSUES_PER_RUN
 
     if not token:
-        print("[issue_creator] No GITHUB_TOKEN set. Skipping issue creation.")
+        logger.error("No GITHUB_TOKEN set. Skipping issue creation.")
         return []
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
+    headers = _github_headers(token)
 
-    # Set up labels
+    # Ensure all required labels exist in the repo
     ensure_labels_exist(repo, token)
 
     # Get existing issues to avoid duplicates
     existing_titles = get_existing_issue_titles(repo, token)
-    print(f"[issue_creator] Found {len(existing_titles)} existing security issues")
+    logger.info("Found %d existing security issues", len(existing_titles))
 
-    created_issues = []
+    created_issues: list[dict] = []
     skipped = 0
 
     # Sort by severity (critical first)
-    severity_order = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
-    sorted_findings = sorted(findings, key=lambda f: severity_order.get(f.severity, 3))
+    severity_order = {
+        Severity.CRITICAL: 0,
+        Severity.HIGH: 1,
+        Severity.MEDIUM: 2,
+        Severity.LOW: 3,
+    }
+    sorted_findings = sorted(
+        findings, key=lambda f: severity_order.get(f.severity, 3)
+    )
 
     for finding in sorted_findings[:max_issues]:
         title = finding.to_issue_title()
 
+        # Deduplicate against existing open issues
         if title in existing_titles:
             skipped += 1
             continue
@@ -237,49 +162,75 @@ def create_github_issues(
 
         if resp.status_code == 201:
             issue_data = resp.json()
-            created_issues.append({
-                "finding_id": finding.finding_id,
-                "issue_number": issue_data["number"],
-                "issue_url": issue_data["html_url"],
-                "title": title,
-            })
-            print(f"[issue_creator] Created issue #{issue_data['number']}: {title}")
+            created_issues.append(
+                {
+                    "finding_id": finding.finding_id,
+                    "issue_number": issue_data["number"],
+                    "issue_url": issue_data["html_url"],
+                    "title": title,
+                }
+            )
+            logger.info(
+                "Created issue #%d: %s", issue_data["number"], title
+            )
         else:
-            print(f"[issue_creator] Failed to create issue: {resp.status_code} - {resp.text[:200]}")
+            logger.error(
+                "Failed to create issue: %s - %s",
+                resp.status_code,
+                resp.text[:200],
+            )
 
-    print(f"[issue_creator] Created {len(created_issues)} issues, skipped {skipped} duplicates")
+    logger.info(
+        "Created %d issues, skipped %d duplicates",
+        len(created_issues),
+        skipped,
+    )
     return created_issues
 
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Create GitHub Issues from scan results")
-    parser.add_argument("--input", required=True, help="Path to scan_results.json")
-    parser.add_argument("--repo", default=None, help="Target GitHub repo (owner/repo)")
-    parser.add_argument("--report-only", action="store_true", help="Only generate MD report, skip GitHub Issues")
-    parser.add_argument("--max-issues", type=int, default=50, help="Max issues to create")
-    args = parser.parse_args()
-
-    with open(args.input) as f:
+def load_findings_from_json(path: str) -> list[VulnerabilityFinding]:
+    """Load VulnerabilityFinding objects from a scan_results.json file."""
+    with open(path) as f:
         data = json.load(f)
 
-    # Reconstruct findings from JSON
-    findings = []
+    findings: list[VulnerabilityFinding] = []
     for fd in data.get("findings", []):
         fd_copy = {k: v for k, v in fd.items() if k != "finding_id"}
         fd_copy["scan_type"] = ScanType(fd_copy["scan_type"])
         fd_copy["severity"] = Severity(fd_copy["severity"])
         findings.append(VulnerabilityFinding(**fd_copy))
+    return findings
 
-    scan_run_data = data.get("scan_run", {})
-    scan_run = ScanRun(**scan_run_data)
 
-    # Generate MD report
-    report_path = generate_md_report(findings, scan_run)
-    print(f"Report: {report_path}")
+if __name__ == "__main__":
+    import argparse
 
-    # Create GitHub Issues
-    if not args.report_only:
-        issues = create_github_issues(findings, repo=args.repo, max_issues=args.max_issues)
-        print(f"\nCreated {len(issues)} GitHub Issues")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[issue_creator] %(levelname)s: %(message)s",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Create GitHub Issues from scan results"
+    )
+    parser.add_argument(
+        "--input", required=True, help="Path to scan_results.json"
+    )
+    parser.add_argument(
+        "--repo", default=None, help="Target GitHub repo (owner/repo)"
+    )
+    parser.add_argument(
+        "--max-issues",
+        type=int,
+        default=MAX_ISSUES_PER_RUN,
+        help=f"Max issues to create (default: {MAX_ISSUES_PER_RUN})",
+    )
+    args = parser.parse_args()
+
+    findings = load_findings_from_json(args.input)
+    logger.info("Loaded %d findings from %s", len(findings), args.input)
+
+    issues = create_github_issues(
+        findings, repo=args.repo, max_issues=args.max_issues
+    )
+    print(f"\nCreated {len(issues)} GitHub Issues")
