@@ -56,10 +56,9 @@ rules:
       - patterns:
           - pattern: Markup($SINK)
           - focus-metavariable: $SINK
-      # Markup() with format
-      - patterns:
-          - pattern: Markup(...) % $SINK
-          - focus-metavariable: $SINK
+      # Note: Markup(...) % $SINK is intentionally NOT a sink here.
+      # Markup.__mod__ auto-escapes its arguments, making it safe.
+      # The regex rule python-xss-markup-format handles it at INFO level.
     pattern-sanitizers:
       # html.escape()
       - pattern: html.escape(...)
