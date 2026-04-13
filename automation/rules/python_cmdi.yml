@@ -57,6 +57,5 @@ rules:
           - focus-metavariable: $CODE
     pattern-sanitizers:
       - pattern: shlex.quote(...)
-      - pattern: shlex.split(...)
       - pattern: int(...)
       - pattern: float(...)

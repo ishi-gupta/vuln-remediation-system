@@ -58,7 +58,10 @@ rules:
           - pattern: Path($PATH)
           - focus-metavariable: $PATH
     pattern-sanitizers:
-      # os.path.realpath followed by startswith check is the standard mitigation
+      # os.path.basename() strips directory components, making traversal impossible
       - pattern: os.path.basename(...)
-      - pattern: os.path.realpath(...)
+      # Note: os.path.realpath() alone is NOT a sanitizer — it resolves symlinks
+      # but the result can still point anywhere. The real mitigation is
+      # realpath + startswith check, which Semgrep taint can't express as a
+      # multi-step sanitizer. We intentionally do NOT list realpath here.
       - pattern: int(...)

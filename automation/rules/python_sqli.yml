@@ -53,23 +53,18 @@ rules:
       - pattern: str(int(...))
       # Parameterized query patterns are safe by design
 
-  # Regex fallback: detect SQL-like string building
+  # Regex fallback: detect SQL query building via string formatting
+  # The taint rule above handles data flow; this catches literal patterns
+  # where user input is formatted directly into a SQL-like string.
   - id: python-sqli-string-format
-    patterns:
-      - pattern-either:
-          - pattern: |
-              $QUERY = "..." % $INPUT
-          - pattern: |
-              $QUERY = f"...{$INPUT}..."
-          - pattern: |
-              $QUERY = "..." + $INPUT + "..."
-          - pattern: |
-              $QUERY = "...".format($INPUT)
-      - metavariable-regex:
-          metavariable: $QUERY
-          regex: .*(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC).*
+    pattern-either:
+      - pattern: $CURSOR.execute("..." % $INPUT)
+      - pattern: $CURSOR.execute(f"...{$INPUT}...")
+      - pattern: $CURSOR.execute("..." + $INPUT + "...")
+      - pattern: $CURSOR.execute("...".format($INPUT))
     message: >
-      SQL query built with string formatting — potential SQL injection.
+      SQL query built with string formatting passed to execute() — potential SQL injection.
+      Use parameterized queries instead.
     languages: [python]
     severity: WARNING
     metadata:
