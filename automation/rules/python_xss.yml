@@ -107,6 +107,8 @@ rules:
       - pattern: html.escape(...)
       - pattern: escape(...)
       - pattern: int(...)
+      # render_template() uses Jinja2 auto-escaping — safe by default
+      - pattern: render_template(...)
 
   # ============================================================
   # Regex-based rules (kept for patterns taint can't catch,

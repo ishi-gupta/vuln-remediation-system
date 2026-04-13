@@ -47,10 +47,11 @@ rules:
       - patterns:
           - pattern: yaml.unsafe_load($DATA)
           - focus-metavariable: $DATA
-      # shelve
-      - patterns:
-          - pattern: shelve.open($PATH)
-          - focus-metavariable: $PATH
+      # Note: shelve.open is NOT included here as a sink because the
+      # json.loads/yaml.safe_load sanitizers would suppress it incorrectly.
+      # shelve.open takes a file path, not serialized data, so json.loads
+      # does not make the argument safe. shelve is covered by
+      # python_path_traversal.yml instead.
       # Note: exec/eval are NOT included here as sinks because the
       # json.loads/yaml.safe_load sanitizers would suppress them incorrectly.
       # exec/eval are covered by python-cmdi-taint in python_cmdi.yml
