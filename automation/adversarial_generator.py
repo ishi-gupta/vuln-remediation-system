@@ -308,7 +308,7 @@ def run_evaluation(
 
     # Run the scanner
     scan_output = DATA_DIR / "adversarial_scan_results.json"
-    target = test_suite_path
+    target = str(Path(test_suite_path).resolve())
 
     cmd = [
         sys.executable, "-m", "automation.scanner",
@@ -565,6 +565,9 @@ def main():
             print("ERROR: --test-suite and --scanner-repo are required for evaluate mode")
             sys.exit(1)
         results = run_evaluation(test_suite, scanner_repo, args.round_id)
+        if "error" in results:
+            print(f"ERROR: {results['error']}")
+            sys.exit(1)
         print(f"\nDetection rate: {results.get('overall_detection_rate', 0):.1%}")
         print(f"Detected: {results.get('total_detected', 0)}/{results.get('total_planted', 0)}")
         for cat in results.get("categories", []):
@@ -580,6 +583,9 @@ def main():
         )
         if "evaluation" in results:
             eval_r = results["evaluation"]
+            if "error" in eval_r:
+                print(f"Evaluation error: {eval_r['error']}")
+                sys.exit(1)
             print(f"\n{'='*60}")
             print(f"ADVERSARIAL TEST RESULTS (Round {results['round_id']})")
             print(f"{'='*60}")
