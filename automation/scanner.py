@@ -79,10 +79,16 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Semgrep (multi-language SAST) and return normalized findings."""
     findings = []
     try:
+        # Build config args: always use auto rules + custom rules if available
+        config_args = ["--config", "auto"]
+        custom_rules = Path(__file__).parent / "rules"
+        if custom_rules.is_dir():
+            config_args.extend(["--config", str(custom_rules)])
+
         result = subprocess.run(
             [
                 "semgrep", "scan",
-                "--config", "auto",
+                *config_args,
                 "--json",
                 repo_path,
             ],
