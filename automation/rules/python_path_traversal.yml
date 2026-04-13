@@ -1,0 +1,64 @@
+rules:
+  # ============================================================
+  # Path Traversal Detection — Taint Analysis (CWE-22)
+  # Tracks user input flowing into file system operations
+  # ============================================================
+
+  - id: python-path-traversal-taint
+    mode: taint
+    message: >
+      User-controlled input flows into a file system operation without validation.
+      Validate and sanitize file paths: use os.path.realpath() to resolve symlinks,
+      then verify the resolved path starts with the expected base directory.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-22: Path Traversal"
+      confidence: HIGH
+      impact: HIGH
+      category: security
+      technology:
+        - python
+    pattern-sources:
+      - patterns:
+          - pattern: |
+              def $FUNC(..., $PARAM, ...):
+                  ...
+          - focus-metavariable: $PARAM
+    pattern-sinks:
+      # open()
+      - patterns:
+          - pattern: open($PATH, ...)
+          - focus-metavariable: $PATH
+      # os.path.join (still vulnerable if user controls components)
+      - patterns:
+          - pattern: os.path.join(..., $PATH, ...)
+          - focus-metavariable: $PATH
+      # os.makedirs
+      - patterns:
+          - pattern: os.makedirs($PATH, ...)
+          - focus-metavariable: $PATH
+      # os.remove / os.unlink
+      - patterns:
+          - pattern: os.remove($PATH)
+          - focus-metavariable: $PATH
+      - patterns:
+          - pattern: os.unlink($PATH)
+          - focus-metavariable: $PATH
+      # shutil operations
+      - patterns:
+          - pattern: shutil.copy($SRC, ...)
+          - focus-metavariable: $SRC
+      - patterns:
+          - pattern: shutil.move($SRC, ...)
+          - focus-metavariable: $SRC
+      # pathlib
+      - patterns:
+          - pattern: Path($PATH)
+          - focus-metavariable: $PATH
+    pattern-sanitizers:
+      # os.path.realpath followed by startswith check is the standard mitigation
+      - pattern: os.path.basename(...)
+      - pattern: os.path.realpath(...)
+      - pattern: int(...)

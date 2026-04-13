@@ -1,0 +1,82 @@
+rules:
+  # ============================================================
+  # SQL Injection Detection — Taint Analysis (CWE-89)
+  # Tracks user input flowing into SQL query execution
+  # ============================================================
+
+  - id: python-sqli-taint
+    mode: taint
+    message: >
+      User-controlled input flows into a SQL query without parameterization.
+      Use parameterized queries (e.g., cursor.execute("SELECT ... WHERE id = %s", (user_id,)))
+      instead of string formatting.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-89: SQL Injection"
+      confidence: HIGH
+      impact: HIGH
+      category: security
+      technology:
+        - python
+    pattern-sources:
+      - patterns:
+          - pattern: |
+              def $FUNC(..., $PARAM, ...):
+                  ...
+          - focus-metavariable: $PARAM
+    pattern-sinks:
+      # cursor.execute with string formatting
+      - patterns:
+          - pattern: $CURSOR.execute($QUERY, ...)
+          - focus-metavariable: $QUERY
+      # engine.execute
+      - patterns:
+          - pattern: $ENGINE.execute($QUERY, ...)
+          - focus-metavariable: $QUERY
+      # SQLAlchemy text()
+      - patterns:
+          - pattern: text($QUERY)
+          - focus-metavariable: $QUERY
+      # pd.read_sql
+      - patterns:
+          - pattern: pd.read_sql($QUERY, ...)
+          - focus-metavariable: $QUERY
+      # connection.execute
+      - patterns:
+          - pattern: $CONN.execute($QUERY)
+          - focus-metavariable: $QUERY
+    pattern-sanitizers:
+      - pattern: int(...)
+      - pattern: float(...)
+      - pattern: str(int(...))
+      # Parameterized query patterns are safe by design
+
+  # Regex fallback: detect SQL-like string building
+  - id: python-sqli-string-format
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $QUERY = "..." % $INPUT
+          - pattern: |
+              $QUERY = f"...{$INPUT}..."
+          - pattern: |
+              $QUERY = "..." + $INPUT + "..."
+          - pattern: |
+              $QUERY = "...".format($INPUT)
+      - metavariable-regex:
+          metavariable: $QUERY
+          regex: .*(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC).*
+    message: >
+      SQL query built with string formatting — potential SQL injection.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-89: SQL Injection"
+      confidence: MEDIUM
+      impact: HIGH
+      category: security
+      technology:
+        - python

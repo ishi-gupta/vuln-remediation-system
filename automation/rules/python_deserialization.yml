@@ -1,0 +1,83 @@
+rules:
+  # ============================================================
+  # Insecure Deserialization Detection — Taint Analysis (CWE-502)
+  # Tracks untrusted data flowing into deserialization functions
+  # ============================================================
+
+  - id: python-deserialization-taint
+    mode: taint
+    message: >
+      Untrusted data flows into a deserialization function that can execute
+      arbitrary code. Use safe alternatives: json.loads() for data exchange,
+      yaml.safe_load() instead of yaml.load(), or implement allowlists for
+      pickle if unavoidable.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-502: Deserialization of Untrusted Data"
+      confidence: HIGH
+      impact: HIGH
+      category: security
+      technology:
+        - python
+    pattern-sources:
+      - patterns:
+          - pattern: |
+              def $FUNC(..., $PARAM, ...):
+                  ...
+          - focus-metavariable: $PARAM
+    pattern-sinks:
+      # pickle
+      - patterns:
+          - pattern: pickle.loads($DATA)
+          - focus-metavariable: $DATA
+      - patterns:
+          - pattern: pickle.load($FILE)
+          - focus-metavariable: $FILE
+      # marshal
+      - patterns:
+          - pattern: marshal.loads($DATA)
+          - focus-metavariable: $DATA
+      # yaml.load (without SafeLoader)
+      - patterns:
+          - pattern: yaml.load($DATA)
+          - focus-metavariable: $DATA
+      # yaml.unsafe_load
+      - patterns:
+          - pattern: yaml.unsafe_load($DATA)
+          - focus-metavariable: $DATA
+      # shelve
+      - patterns:
+          - pattern: shelve.open($PATH)
+          - focus-metavariable: $PATH
+      # exec / eval (code injection via deserialization)
+      - patterns:
+          - pattern: exec($CODE)
+          - focus-metavariable: $CODE
+      - patterns:
+          - pattern: eval($CODE)
+          - focus-metavariable: $CODE
+    pattern-sanitizers:
+      # Safe YAML loading
+      - pattern: yaml.safe_load(...)
+      # JSON is safe for deserialization
+      - pattern: json.loads(...)
+      - pattern: json.load(...)
+
+  # Regex fallback: catch yaml.load without Loader argument
+  - id: python-yaml-unsafe-load
+    pattern: yaml.load($DATA)
+    message: >
+      yaml.load() without Loader argument allows arbitrary code execution.
+      Use yaml.safe_load() instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-502: Deserialization of Untrusted Data"
+      confidence: HIGH
+      impact: HIGH
+      category: security
+      technology:
+        - python

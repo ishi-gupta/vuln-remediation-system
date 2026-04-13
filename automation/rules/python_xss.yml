@@ -97,7 +97,9 @@ rules:
           - focus-metavariable: $PARAM
     pattern-sinks:
       # render_template_string
-      - pattern: render_template_string(...)
+      - patterns:
+          - pattern: render_template_string($SINK, ...)
+          - focus-metavariable: $SINK
       # make_response with HTML
       - patterns:
           - pattern: make_response($SINK)
