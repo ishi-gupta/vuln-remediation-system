@@ -129,12 +129,53 @@ def _fetch_github_issues() -> list[dict[str, Any]]:
 
 
 def _load_adversarial_results() -> dict[str, Any]:
-    """Load adversarial test results from disk."""
+    """Load adversarial test results from disk and normalize to frontend format.
+
+    The frontend expects:
+      - overall_detection_rate: float (0.0–1.0+)
+      - categories: list of {name, total, detected, missed, rate}
+
+    The raw file may use:
+      - summary.overall_detection_rate_pct (percentage)
+      - categories as a dict keyed by category name
+    """
     try:
         with open(ADVERSARIAL_RESULTS_FILE) as f:
-            return json.load(f)
+            raw = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+    # Already in frontend format
+    if "overall_detection_rate" in raw and isinstance(raw.get("categories"), list):
+        return raw
+
+    # Transform from raw test-harness format
+    summary = raw.get("summary", {})
+    cats_raw = raw.get("categories", {})
+
+    overall_pct = summary.get("overall_detection_rate_pct", 0)
+    overall_rate = overall_pct / 100.0  # convert 233.3 → 2.333
+
+    categories: list[dict[str, Any]] = []
+    if isinstance(cats_raw, dict):
+        for name, info in cats_raw.items():
+            expected = info.get("expected_total", 0)
+            detected = info.get("detected", 0)
+            missed = max(0, expected - detected)
+            rate = (info.get("detection_rate_pct", 0)) / 100.0
+            display_name = name.replace("_", " ").title()
+            categories.append({
+                "name": display_name,
+                "total": expected,
+                "detected": detected,
+                "missed": missed,
+                "rate": rate,
+            })
+
+    return {
+        "overall_detection_rate": overall_rate,
+        "categories": categories,
+    }
 
 
 # ---------------------------------------------------------------------------

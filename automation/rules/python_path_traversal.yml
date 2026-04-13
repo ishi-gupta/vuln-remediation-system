@@ -57,6 +57,11 @@ rules:
       - patterns:
           - pattern: Path($PATH)
           - focus-metavariable: $PATH
+      # shelve.open — uses pickle internally, path controls which shelf file
+      # Moved here from python_deserialization.yml to avoid cross-sanitizer leakage
+      - patterns:
+          - pattern: shelve.open($PATH)
+          - focus-metavariable: $PATH
     pattern-sanitizers:
       # os.path.basename() strips directory components, making traversal impossible
       - pattern: os.path.basename(...)

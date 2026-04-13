@@ -45,15 +45,15 @@ rules:
           - focus-metavariable: $CMD
       # os.popen
       - patterns:
-          - pattern: os.popen($CMD)
+          - pattern: os.popen($CMD, ...)
           - focus-metavariable: $CMD
       # eval
       - patterns:
-          - pattern: eval($CODE)
+          - pattern: eval($CODE, ...)
           - focus-metavariable: $CODE
       # exec
       - patterns:
-          - pattern: exec($CODE)
+          - pattern: exec($CODE, ...)
           - focus-metavariable: $CODE
     pattern-sanitizers:
       - pattern: shlex.quote(...)
