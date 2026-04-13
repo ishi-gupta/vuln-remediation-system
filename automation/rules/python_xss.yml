@@ -53,11 +53,7 @@ rules:
 
   # 3. F-string with HTML/script content
   - id: python-xss-fstring
-    pattern: |
-      f"...{$VAR}..."
-    metavariable-regex:
-      metavariable: $__TEXT__
-      regex: .*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>].*
+    pattern-regex: 'f"[^"]*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style)[^"]*\{[^}]+\}[^"]*"'
     message: >
       User input is inserted into an HTML/script string via f-string without escaping.
       This can lead to Cross-Site Scripting (XSS).
