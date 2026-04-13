@@ -82,16 +82,18 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
         result = subprocess.run(
             [
                 "semgrep", "scan",
-                "--config", "p/security-audit",
+                "--config", "auto",
                 "--json",
-                "--quiet",
                 repo_path,
             ],
             capture_output=True,
             text=True,
             timeout=600,
         )
-        output = result.stdout
+        print(f"[semgrep] returncode={result.returncode}")
+        if result.stderr:
+            print(f"[semgrep] stderr: {result.stderr[:500]}")
+        output = result.stdout or result.stderr
         if output:
             data = json.loads(output)
             for item in data.get("results", []):
@@ -143,10 +145,12 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
     """Run pip-audit (Python SCA) and return normalized findings."""
     findings = []
     req_files = list(Path(repo_path).rglob("requirements*.txt"))
+    req_dir_files = list(Path(repo_path).rglob("requirements/*.txt"))
     setup_files = list(Path(repo_path).rglob("setup.cfg"))
     pyproject_files = list(Path(repo_path).rglob("pyproject.toml"))
 
-    targets = req_files + setup_files + pyproject_files
+    # Deduplicate in case both globs match the same file
+    targets = list(dict.fromkeys(req_files + req_dir_files + setup_files + pyproject_files))
     if not targets:
         return findings
 
@@ -209,6 +213,7 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
             [
                 "gitleaks", "detect",
                 "--source", repo_path,
+                "--no-git",
                 "--report-format", "json",
                 "--report-path", tmp_path,
                 "--no-banner",
@@ -238,7 +243,9 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
                         remediation="Remove the secret from the code and rotate it immediately. Use environment variables or a secret manager instead.",
                     ))
             os.unlink(tmp_path)
-    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+    except subprocess.TimeoutExpired:
+        print(f"[gitleaks] Warning: scan timed out after 300s")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"[gitleaks] Error: {e}")
     return findings
 
