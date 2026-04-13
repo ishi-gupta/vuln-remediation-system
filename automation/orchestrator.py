@@ -1,9 +1,10 @@
 """
 Remediation Orchestrator — watches for new security issues in the target repo
-and triggers Devin API sessions to fix them.
+and triggers Devin API sessions to fix them. Tracks status in data/state.json.
 """
 
 import json
+import logging
 import time
 from datetime import datetime
 from typing import Optional
@@ -21,6 +22,7 @@ from automation.config import (
 )
 from automation.models import RemediationRecord, RemediationStatus, SystemState
 
+logger = logging.getLogger(__name__)
 
 PLAYBOOK_PROMPT = """You are remediating a security vulnerability. Follow these steps:
 
@@ -43,14 +45,22 @@ Issue Body:
 """
 
 
-def get_new_security_issues(repo: str, token: str) -> list[dict]:
-    """Get security issues that haven't been picked up for remediation yet."""
-    headers = {
+def _github_headers(token: str) -> dict[str, str]:
+    return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
 
-    # Get issues with 'security' and 'automated' labels but NOT 'remediation-started'
+
+def get_new_security_issues(repo: str, token: str) -> list[dict]:
+    """
+    Get security issues that haven't been picked up for remediation yet.
+
+    Fetches issues with labels ``security,automated`` but filters out any that
+    already carry ``remediation-started`` or ``remediation-failed``.
+    """
+    headers = _github_headers(token)
+
     resp = requests.get(
         f"{GITHUB_API_BASE}/repos/{repo}/issues",
         headers=headers,
@@ -64,15 +74,14 @@ def get_new_security_issues(repo: str, token: str) -> list[dict]:
     )
 
     if resp.status_code != 200:
-        print(f"[orchestrator] Failed to fetch issues: {resp.status_code}")
+        logger.error("Failed to fetch issues: %s", resp.status_code)
         return []
 
     issues = resp.json()
 
-    # Filter out issues that already have 'remediation-started'
     new_issues = []
     for issue in issues:
-        label_names = [l["name"] for l in issue.get("labels", [])]
+        label_names = [label["name"] for label in issue.get("labels", [])]
         if "remediation-started" not in label_names and "remediation-failed" not in label_names:
             new_issues.append(issue)
 
@@ -81,39 +90,52 @@ def get_new_security_issues(repo: str, token: str) -> list[dict]:
 
 def add_label(repo: str, issue_number: int, label: str, token: str) -> None:
     """Add a label to a GitHub issue."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-    requests.post(
+    headers = _github_headers(token)
+    resp = requests.post(
         f"{GITHUB_API_BASE}/repos/{repo}/issues/{issue_number}/labels",
         headers=headers,
         json={"labels": [label]},
     )
+    if resp.status_code not in (200, 201):
+        logger.warning(
+            "Failed to add label '%s' to issue #%d: %s",
+            label,
+            issue_number,
+            resp.status_code,
+        )
 
 
 def comment_on_issue(repo: str, issue_number: int, body: str, token: str) -> None:
     """Add a comment to a GitHub issue."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-    requests.post(
+    headers = _github_headers(token)
+    resp = requests.post(
         f"{GITHUB_API_BASE}/repos/{repo}/issues/{issue_number}/comments",
         headers=headers,
         json={"body": body},
     )
+    if resp.status_code not in (200, 201):
+        logger.warning(
+            "Failed to comment on issue #%d: %s",
+            issue_number,
+            resp.status_code,
+        )
 
 
 def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
-    """Create a new Devin session via the API."""
+    """
+    Create a new Devin session via the API.
+
+    Sends the structured-output JSON schema so Devin returns machine-readable
+    results (issue_number, status, pr_url, etc.).
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    payload = {
+    payload: dict = {
         "prompt": prompt,
+        "structured_output_schema": STRUCTURED_OUTPUT_SCHEMA,
     }
 
     resp = requests.post(
@@ -123,11 +145,14 @@ def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
     )
 
     if resp.status_code in (200, 201):
-        data = resp.json()
-        return data
-    else:
-        print(f"[orchestrator] Failed to create Devin session: {resp.status_code} - {resp.text[:300]}")
-        return None
+        return resp.json()
+
+    logger.error(
+        "Failed to create Devin session: %s - %s",
+        resp.status_code,
+        resp.text[:300],
+    )
+    return None
 
 
 def get_session_status(session_id: str, api_key: str) -> Optional[dict]:
@@ -143,6 +168,8 @@ def get_session_status(session_id: str, api_key: str) -> Optional[dict]:
 
     if resp.status_code == 200:
         return resp.json()
+
+    logger.warning("Failed to get session %s status: %s", session_id, resp.status_code)
     return None
 
 
@@ -156,20 +183,20 @@ def trigger_remediation(
     issue_number = issue["number"]
     issue_title = issue["title"]
     issue_url = issue["html_url"]
-    issue_body = issue.get("body", "")
+    issue_body = issue.get("body", "") or ""
 
-    # Mark the issue as being worked on
+    # 1. Mark the issue as being worked on
     add_label(repo, issue_number, "remediation-started", token)
 
-    # Comment on the issue
+    # 2. Comment on issue
     comment_on_issue(
         repo,
         issue_number,
-        f"Automated remediation session triggered. Devin is working on a fix.",
+        "Automated remediation session triggered. Devin is working on a fix.",
         token,
     )
 
-    # Build the prompt for Devin
+    # 3. Build the prompt for Devin
     prompt = PLAYBOOK_PROMPT.format(
         repo=f"https://github.com/{repo}",
         issue_title=issue_title,
@@ -178,7 +205,7 @@ def trigger_remediation(
         issue_body=issue_body[:3000],  # Truncate to avoid exceeding limits
     )
 
-    # Create Devin session
+    # 4. Create Devin session
     session = create_devin_session(prompt, api_key)
     if not session:
         add_label(repo, issue_number, "remediation-failed", token)
@@ -193,6 +220,7 @@ def trigger_remediation(
     session_id = session.get("session_id", session.get("id", ""))
     session_url = session.get("url", f"https://app.devin.ai/sessions/{session_id}")
 
+    # 5. Comment with Devin session link
     comment_on_issue(
         repo,
         issue_number,
@@ -208,17 +236,26 @@ def trigger_remediation(
         devin_session_id=session_id,
     )
 
-    print(f"[orchestrator] Triggered remediation for issue #{issue_number}: session {session_id}")
+    logger.info(
+        "Triggered remediation for issue #%d: session %s",
+        issue_number,
+        session_id,
+    )
     return record
 
 
-def poll_active_sessions(state: SystemState, api_key: str, token: str, repo: str) -> None:
+def poll_active_sessions(
+    state: SystemState, api_key: str, token: str, repo: str
+) -> None:
     """Check status of all active Devin sessions and update state."""
-    for session_info in state.active_sessions:
+    completed_indices: list[int] = []
+
+    for idx, session_info in enumerate(state.active_sessions):
         session_id = session_info.get("devin_session_id", "")
         issue_number = session_info.get("issue_number", 0)
 
         if not session_id or session_info.get("status") in ("fixed", "failed"):
+            completed_indices.append(idx)
             continue
 
         status_data = get_session_status(session_id, api_key)
@@ -228,9 +265,13 @@ def poll_active_sessions(state: SystemState, api_key: str, token: str, repo: str
         session_status = status_data.get("status", "")
 
         if session_status in ("finished", "stopped"):
-            # Check structured output
-            structured_output = status_data.get("structured_output", {})
+            # Check structured output for PR URL and fix status
+            structured_output = status_data.get("structured_output", {}) or {}
             pr_url = structured_output.get("pr_url", "")
+            # Also check the top-level pull_request field from the API
+            if not pr_url:
+                pr_info = status_data.get("pull_request") or {}
+                pr_url = pr_info.get("url", "")
             fix_status = structured_output.get("status", "needs_review")
 
             session_info["status"] = fix_status
@@ -256,24 +297,24 @@ def poll_active_sessions(state: SystemState, api_key: str, token: str, repo: str
 
             # Move from active to remediation records
             state.remediation_records.append(session_info)
+            completed_indices.append(idx)
 
-        elif session_status == "error":
+        elif session_status in ("error", "expired", "blocked"):
             session_info["status"] = "failed"
             session_info["updated_at"] = datetime.utcnow().isoformat()
             add_label(repo, issue_number, "remediation-failed", token)
             comment_on_issue(
                 repo,
                 issue_number,
-                "Automated remediation session encountered an error. Manual review needed.",
+                f"Automated remediation session {session_status}. Manual review needed.",
                 token,
             )
             state.remediation_records.append(session_info)
+            completed_indices.append(idx)
 
-    # Remove completed sessions from active list
-    state.active_sessions = [
-        s for s in state.active_sessions
-        if s.get("status") not in ("fixed", "partial", "failed", "needs_review")
-    ]
+    # Remove completed sessions from active list (iterate in reverse to keep indices valid)
+    for idx in sorted(completed_indices, reverse=True):
+        state.active_sessions.pop(idx)
 
 
 def run_orchestrator(
@@ -288,8 +329,8 @@ def run_orchestrator(
     Main orchestration loop.
 
     Args:
-        repo: Target GitHub repo.
-        token: GitHub token.
+        repo: Target GitHub repo (owner/repo).
+        token: GitHub personal access token.
         api_key: Devin API key.
         max_concurrent: Max simultaneous Devin sessions.
         poll_interval: Seconds between poll cycles.
@@ -300,17 +341,19 @@ def run_orchestrator(
     api_key = api_key or DEVIN_API_KEY
 
     if not token or not api_key:
-        print("[orchestrator] ERROR: GITHUB_TOKEN and DEVIN_API_KEY must be set.")
+        logger.error("GITHUB_TOKEN and DEVIN_API_KEY must both be set.")
         return
 
     state = SystemState.load(str(STATE_FILE))
 
     while True:
-        print(f"\n[orchestrator] Polling for new issues in {repo}...")
+        logger.info("Polling for new issues in %s ...", repo)
 
         # Check active sessions
         if state.active_sessions:
-            print(f"[orchestrator] Checking {len(state.active_sessions)} active sessions...")
+            logger.info(
+                "Checking %d active sessions ...", len(state.active_sessions)
+            )
             poll_active_sessions(state, api_key, token, repo)
 
         # Get new issues
@@ -318,32 +361,60 @@ def run_orchestrator(
         active_count = len(state.active_sessions)
         available_slots = max(0, max_concurrent - active_count)
 
-        print(f"[orchestrator] {len(new_issues)} new issues, {active_count} active sessions, {available_slots} slots available")
+        logger.info(
+            "%d new issues, %d active sessions, %d slots available",
+            len(new_issues),
+            active_count,
+            available_slots,
+        )
 
-        # Trigger remediation for new issues
+        # Trigger remediation for new issues (up to available slots)
         for issue in new_issues[:available_slots]:
             record = trigger_remediation(issue, repo, token, api_key)
             if record:
                 state.active_sessions.append(record.to_dict())
 
-        # Save state
+        # Persist state
         state.save(str(STATE_FILE))
 
         if one_shot:
             break
 
-        print(f"[orchestrator] Sleeping {poll_interval}s...")
+        logger.info("Sleeping %ds ...", poll_interval)
         time.sleep(poll_interval)
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Orchestrate vulnerability remediation")
-    parser.add_argument("--repo", default=None, help="Target GitHub repo (owner/repo)")
-    parser.add_argument("--max-concurrent", type=int, default=5, help="Max concurrent Devin sessions")
-    parser.add_argument("--poll-interval", type=int, default=60, help="Seconds between poll cycles")
-    parser.add_argument("--one-shot", action="store_true", help="Run once and exit")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[orchestrator] %(levelname)s: %(message)s",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Orchestrate vulnerability remediation via Devin AI"
+    )
+    parser.add_argument(
+        "--repo", default=None, help="Target GitHub repo (owner/repo)"
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=5,
+        help="Max concurrent Devin sessions (default: 5)",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=60,
+        help="Seconds between poll cycles (default: 60)",
+    )
+    parser.add_argument(
+        "--one-shot",
+        action="store_true",
+        help="Run once and exit (don't loop)",
+    )
     args = parser.parse_args()
 
     run_orchestrator(
