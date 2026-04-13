@@ -35,8 +35,13 @@ jobs:
         }}
 
     steps:
-      - name: Print scan target
-        run: echo "Scanning repository:\ ${{ env.TARGET_REPO }}"
+      - name: Validate target repo format
+        run: |
+          if ! echo "$TARGET_REPO" | grep -qE '^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$'; then
+            echo "::error::Invalid target_repo format: '$TARGET_REPO'. Expected 'owner/repo'."
+            exit 1
+          fi
+          echo "Scanning repository: $TARGET_REPO"
 
       - name: Checkout target repo
         uses: actions/checkout@v4
@@ -89,4 +94,4 @@ jobs:
         run: |
           python -m automation.issue_creator \
             --input scan_results.json \
-            --repo "${{ env.TARGET_REPO }}"
+            --repo "$TARGET_REPO"
