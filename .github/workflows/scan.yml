@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Validate target repo format
         run: |
-          if ! echo "$TARGET_REPO" | grep -qE '^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$'; then
+          if [[ "$TARGET_REPO" == *$'\n'* ]] || ! echo "$TARGET_REPO" | grep -qE '^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$'; then
             echo "::error::Invalid target_repo format: '$TARGET_REPO'. Expected 'owner/repo'."
             exit 1
           fi
