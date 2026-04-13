@@ -378,7 +378,7 @@ def run_evaluation(
             f_file = finding.get("file_path", "")
             f_line = finding.get("line_number", 0)
             # Match if same file and within 5 lines (scanners sometimes report nearby lines)
-            if exp_file in f_file or f_file in exp_file:
+            if exp_file and f_file and (exp_file in f_file or f_file in exp_file):
                 if abs(f_line - exp_line) <= 5:
                     found = True
                     break
