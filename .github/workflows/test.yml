@@ -1,0 +1,55 @@
+name: CI Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint & Import Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[scanners]"
+
+      - name: Compile all Python files
+        run: |
+          python -m py_compile automation/config.py
+          python -m py_compile automation/models.py
+          python -m py_compile automation/scanner.py
+          python -m py_compile automation/issue_creator.py
+          python -m py_compile automation/orchestrator.py
+          python -m py_compile automation/dashboard.py
+          echo "All Python files compiled successfully"
+
+      - name: Verify module imports
+        run: |
+          python -c "from automation import config; print('automation.config OK')"
+          python -c "from automation import models; print('automation.models OK')"
+          python -c "from automation import scanner; print('automation.scanner OK')"
+          python -c "from automation import issue_creator; print('automation.issue_creator OK')"
+          python -c "from automation import orchestrator; print('automation.orchestrator OK')"
+          python -c "from automation import dashboard; print('automation.dashboard OK')"
+          echo "All module imports verified"
+
+      - name: Run unit tests (if they exist)
+        run: |
+          if [ -d "tests" ] && [ -n "$(find tests -name 'test_*.py' -o -name '*_test.py' 2>/dev/null)" ]; then
+            pip install pytest
+            python -m pytest tests/ -v
+          else
+            echo "No unit tests found — skipping"
+          fi
