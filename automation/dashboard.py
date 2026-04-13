@@ -1,31 +1,39 @@
 """
-Observability Dashboard Backend — FastAPI server that provides:
-- Real-time system metrics (scan results, remediation status, detection rates)
-- API endpoints for the React frontend
-- Serves static frontend files
+Observability Dashboard — FastAPI backend for the Vulnerability Remediation System.
+
+Serves API endpoints for metrics, findings, issues, sessions, and adversarial results,
+plus the built React frontend from dashboard/dist/.
 """
 
 import json
-import os
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-
-from automation.config import STATE_FILE, DATA_DIR, GITHUB_TOKEN, GITHUB_API_BASE, GITHUB_REPO
-from automation.models import SystemState
+from typing import Any
 
 import requests
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from automation.config import (
+    DATA_DIR,
+    DASHBOARD_HOST,
+    DASHBOARD_PORT,
+    GITHUB_API_BASE,
+    GITHUB_REPO,
+    GITHUB_TOKEN,
+    STATE_FILE,
+)
+from automation.models import SystemState
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Vulnerability Remediation Dashboard",
-    description="Observability dashboard for the AI-assisted vulnerability remediation system",
-    version="1.0.0",
+    description="Observability dashboard for the vulnerability remediation system",
+    version="0.1.0",
 )
 
 app.add_middleware(
@@ -36,193 +44,218 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+FRONTEND_DIR = Path(__file__).parent.parent / "dashboard" / "dist"
+ADVERSARIAL_RESULTS_FILE = DATA_DIR / "adversarial_results.json"
 
-# ── Helper Functions ────────────────────────────────────────────────
 
-def load_state() -> SystemState:
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_state() -> SystemState:
+    """Load the current system state from disk."""
     return SystemState.load(str(STATE_FILE))
 
 
-def get_github_issues(repo: str, token: str, labels: str = "security,automated") -> list[dict]:
-    """Fetch issues from GitHub for live dashboard data."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-    all_issues = []
-    for state in ["open", "closed"]:
-        page = 1
-        while True:
-            resp = requests.get(
-                f"{GITHUB_API_BASE}/repos/{repo}/issues",
-                headers=headers,
-                params={"state": state, "labels": labels, "per_page": 100, "page": page},
-            )
-            if resp.status_code != 200:
-                break
-            issues = resp.json()
-            if not issues:
-                break
-            all_issues.extend(issues)
-            page += 1
-    return all_issues
+def _github_headers() -> dict[str, str]:
+    """Build headers for GitHub API requests."""
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return headers
 
 
-# ── API Routes ──────────────────────────────────────────────────────
+def _fetch_github_issues() -> list[dict[str, Any]]:
+    """Fetch issues from the target GitHub repo."""
+    if not GITHUB_TOKEN:
+        return []
+
+    issues: list[dict[str, Any]] = []
+    page = 1
+    per_page = 100
+
+    while True:
+        url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/issues"
+        params = {
+            "state": "all",
+            "labels": "security,automated",
+            "per_page": per_page,
+            "page": page,
+        }
+        try:
+            resp = requests.get(url, headers=_github_headers(), params=params, timeout=15)
+            resp.raise_for_status()
+            batch = resp.json()
+        except Exception:
+            logger.exception("Failed to fetch GitHub issues (page %d)", page)
+            break
+
+        if not batch:
+            break
+
+        for raw in batch:
+            labels = [l["name"] for l in raw.get("labels", [])]
+            severity = "medium"
+            for sev in ("critical", "high", "medium", "low"):
+                if sev in labels:
+                    severity = sev
+                    break
+
+            scan_type = "sast"
+            for st in ("sast", "sca", "secret-detection", "container", "iac"):
+                if st in labels:
+                    scan_type = st
+                    break
+
+            issues.append({
+                "number": raw["number"],
+                "title": raw["title"],
+                "state": raw["state"],
+                "severity": severity,
+                "scan_type": scan_type,
+                "labels": labels,
+                "created_at": raw["created_at"],
+                "closed_at": raw.get("closed_at"),
+                "url": raw["html_url"],
+                "has_remediation": "remediation-started" in labels,
+                "remediation_failed": "remediation-failed" in labels,
+            })
+
+        if len(batch) < per_page:
+            break
+        page += 1
+
+    return issues
+
+
+def _load_adversarial_results() -> dict[str, Any]:
+    """Load adversarial test results from disk."""
+    try:
+        with open(ADVERSARIAL_RESULTS_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# API Endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/api/health")
-def health_check():
+async def health() -> dict[str, Any]:
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/api/metrics")
-def get_metrics():
-    """
-    Main metrics endpoint — returns everything the dashboard needs.
-    This is the single source of truth for the frontend.
-    """
-    state = load_state()
+async def metrics() -> dict[str, Any]:
+    state = _load_state()
 
-    # Aggregate scan runs
     total_scans = len(state.scan_runs)
-    total_findings = sum(r.get("total_findings", 0) for r in state.scan_runs)
-    total_critical = sum(r.get("critical", 0) for r in state.scan_runs)
-    total_high = sum(r.get("high", 0) for r in state.scan_runs)
-    total_medium = sum(r.get("medium", 0) for r in state.scan_runs)
-    total_low = sum(r.get("low", 0) for r in state.scan_runs)
+    total_findings = len(state.findings)
+    issues_created = sum(r.get("issue_number", 0) > 0 for r in state.remediation_records)
+    active_sessions = len([s for s in state.active_sessions if s.get("status") == "running"])
 
-    # Remediation stats
-    remediation_records = state.remediation_records
-    fixed = sum(1 for r in remediation_records if r.get("status") == "fixed")
-    partial = sum(1 for r in remediation_records if r.get("status") == "partial")
-    failed = sum(1 for r in remediation_records if r.get("status") == "failed")
-    in_progress = len(state.active_sessions)
-    pending = total_findings - fixed - partial - failed - in_progress
+    # Severity breakdown from findings
+    severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for f in state.findings:
+        sev = f.get("severity", "medium")
+        if sev in severity_breakdown:
+            severity_breakdown[sev] += 1
+
+    # Remediation status
+    remediation_status = {"fixed": 0, "partial": 0, "failed": 0, "in_progress": 0, "pending": 0}
+    for r in state.remediation_records:
+        status = r.get("status", "pending")
+        if status in remediation_status:
+            remediation_status[status] += 1
 
     # Success rate
-    completed = fixed + partial + failed
-    success_rate = round((fixed / completed) * 100, 1) if completed > 0 else 0.0
+    total_remediations = sum(remediation_status.values())
+    success_rate = 0.0
+    if total_remediations > 0:
+        success_rate = round((remediation_status["fixed"] / total_remediations) * 100, 1)
 
-    # Detection rate from adversarial tests (if available)
-    adversarial_path = DATA_DIR / "adversarial_results.json"
-    adversarial = {}
-    if adversarial_path.exists():
-        with open(adversarial_path) as f:
-            adversarial = json.load(f)
+    # Scan history
+    scan_history = []
+    for run in state.scan_runs:
+        scan_history.append({
+            "scan_id": run.get("scan_id", ""),
+            "timestamp": run.get("timestamp", ""),
+            "total_findings": run.get("total_findings", 0),
+            "critical": run.get("critical", 0),
+            "high": run.get("high", 0),
+            "medium": run.get("medium", 0),
+            "low": run.get("low", 0),
+        })
+
+    # Recent remediations (last 10)
+    recent_remediations = sorted(
+        state.remediation_records,
+        key=lambda r: r.get("updated_at", ""),
+        reverse=True,
+    )[:10]
+
+    adversarial_results = _load_adversarial_results()
 
     return {
         "overview": {
             "total_scans": total_scans,
             "total_findings": total_findings,
-            "issues_created": sum(r.get("issues_created", 0) for r in state.scan_runs),
-            "active_sessions": in_progress,
+            "issues_created": issues_created,
+            "active_sessions": active_sessions,
             "success_rate": success_rate,
         },
-        "severity_breakdown": {
-            "critical": total_critical,
-            "high": total_high,
-            "medium": total_medium,
-            "low": total_low,
-        },
-        "remediation_status": {
-            "fixed": fixed,
-            "partial": partial,
-            "failed": failed,
-            "in_progress": in_progress,
-            "pending": max(0, pending),
-        },
-        "scan_history": state.scan_runs[-20:],  # Last 20 scans
-        "recent_remediations": remediation_records[-20:],
-        "adversarial_results": adversarial,
+        "severity_breakdown": severity_breakdown,
+        "remediation_status": remediation_status,
+        "scan_history": scan_history,
+        "recent_remediations": recent_remediations,
+        "adversarial_results": adversarial_results,
     }
 
 
 @app.get("/api/findings")
-def get_findings():
-    """Get all findings from the latest scan."""
-    state = load_state()
+async def findings() -> dict[str, Any]:
+    state = _load_state()
     return {"findings": state.findings}
 
 
 @app.get("/api/issues")
-def get_issues():
-    """Get live issues from GitHub."""
-    token = GITHUB_TOKEN
-    repo = GITHUB_REPO
-    if not token:
-        return {"issues": [], "error": "GITHUB_TOKEN not set"}
-
-    issues = get_github_issues(repo, token)
-
-    simplified = []
-    for issue in issues:
-        labels = [l["name"] for l in issue.get("labels", [])]
-        severity = "unknown"
-        for s in ["critical", "high", "medium", "low"]:
-            if s in labels:
-                severity = s
-                break
-
-        scan_type = "unknown"
-        for t in ["sast", "sca", "secret-detection"]:
-            if t in labels:
-                scan_type = t
-                break
-
-        simplified.append({
-            "number": issue["number"],
-            "title": issue["title"],
-            "state": issue["state"],
-            "severity": severity,
-            "scan_type": scan_type,
-            "labels": labels,
-            "created_at": issue["created_at"],
-            "closed_at": issue.get("closed_at"),
-            "url": issue["html_url"],
-            "has_remediation": "remediation-started" in labels,
-            "remediation_failed": "remediation-failed" in labels,
-        })
-
-    return {"issues": simplified, "total": len(simplified)}
+async def issues() -> dict[str, Any]:
+    issue_list = _fetch_github_issues()
+    return {"issues": issue_list}
 
 
 @app.get("/api/sessions")
-def get_sessions():
-    """Get active and completed Devin sessions."""
-    state = load_state()
-    return {
-        "active": state.active_sessions,
-        "completed": state.remediation_records,
-    }
+async def sessions() -> dict[str, Any]:
+    state = _load_state()
+    return {"sessions": state.active_sessions}
 
 
 @app.get("/api/adversarial")
-def get_adversarial_results():
-    """Get adversarial test suite results."""
-    adversarial_path = DATA_DIR / "adversarial_results.json"
-    if not adversarial_path.exists():
-        return {"results": None, "message": "No adversarial test results available yet."}
+async def adversarial() -> dict[str, Any]:
+    results = _load_adversarial_results()
+    if not results:
+        return {
+            "message": "No adversarial test results available yet. Run the adversarial test suite to generate results.",
+            "results": {},
+        }
+    return {"results": results}
 
-    with open(adversarial_path) as f:
-        data = json.load(f)
-    return {"results": data}
 
-
-# ── Serve Frontend (production) ────────────────────────────────────
-
-FRONTEND_DIR = Path(__file__).parent.parent / "dashboard" / "dist"
+# ---------------------------------------------------------------------------
+# Frontend serving
+# ---------------------------------------------------------------------------
 
 if FRONTEND_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
+    # Serve static assets (JS, CSS, images)
+    assets_dir = FRONTEND_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-    @app.get("/{path:path}")
-    def serve_frontend(path: str):
-        file_path = FRONTEND_DIR / path
-        if file_path.exists() and file_path.is_file():
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str) -> FileResponse:
+        """Catch-all route — serve index.html for SPA routing."""
+        file_path = FRONTEND_DIR / full_path
+        if file_path.is_file():
             return FileResponse(str(file_path))
         return FileResponse(str(FRONTEND_DIR / "index.html"))
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
