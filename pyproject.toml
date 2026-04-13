@@ -1,0 +1,17 @@
+[project]
+name = "vuln-remediation-system"
+version = "0.1.0"
+description = "Event-driven vulnerability remediation system with AI-assisted automation"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+scanners = [
+    "bandit>=1.7.0",
+    "semgrep>=1.0.0",
+    "pip-audit>=2.7.0",
+]
