@@ -153,7 +153,7 @@ async def metrics() -> dict[str, Any]:
     total_scans = len(state.scan_runs)
     total_findings = len(state.findings)
     issues_created = sum(r.get("issue_number", 0) > 0 for r in state.remediation_records)
-    active_sessions = len([s for s in state.active_sessions if s.get("status") == "running"])
+    active_sessions = len([s for s in state.active_sessions if s.get("status") == "in_progress"])
 
     # Severity breakdown from findings
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -255,7 +255,7 @@ if FRONTEND_DIR.exists():
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str) -> FileResponse:
         """Catch-all route — serve index.html for SPA routing."""
-        file_path = FRONTEND_DIR / full_path
-        if file_path.is_file():
+        file_path = (FRONTEND_DIR / full_path).resolve()
+        if file_path.is_file() and file_path.is_relative_to(FRONTEND_DIR.resolve()):
             return FileResponse(str(file_path))
         return FileResponse(str(FRONTEND_DIR / "index.html"))

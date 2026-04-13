@@ -205,6 +205,7 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
 def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Gitleaks (secret detection) and return normalized findings."""
     findings = []
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = tmp.name
@@ -242,11 +243,13 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
                         confidence="high",
                         remediation="Remove the secret from the code and rotate it immediately. Use environment variables or a secret manager instead.",
                     ))
-            os.unlink(tmp_path)
     except subprocess.TimeoutExpired:
         print(f"[gitleaks] Warning: scan timed out after 300s")
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"[gitleaks] Error: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
     return findings
 
 
