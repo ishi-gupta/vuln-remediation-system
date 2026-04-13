@@ -51,13 +51,10 @@ rules:
       - patterns:
           - pattern: shelve.open($PATH)
           - focus-metavariable: $PATH
-      # exec / eval (code injection via deserialization)
-      - patterns:
-          - pattern: exec($CODE)
-          - focus-metavariable: $CODE
-      - patterns:
-          - pattern: eval($CODE)
-          - focus-metavariable: $CODE
+      # Note: exec/eval are NOT included here as sinks because the
+      # json.loads/yaml.safe_load sanitizers would suppress them incorrectly.
+      # exec/eval are covered by python-cmdi-taint in python_cmdi.yml
+      # which doesn't have these sanitizers.
     pattern-sanitizers:
       # Safe YAML loading
       - pattern: yaml.safe_load(...)
