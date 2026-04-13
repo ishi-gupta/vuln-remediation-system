@@ -1,136 +1,17 @@
 rules:
   # ============================================================
-  # Python XSS Detection Rules
-  # Custom rules for detecting cross-site scripting patterns
-  # in Python web applications.
+  # Python XSS Detection Rules — Taint Analysis
+  # Uses data flow tracking instead of string pattern matching.
+  # Tracks user input from sources → sinks, with sanitizer exclusions.
   # ============================================================
 
-  # 1. String concatenation with HTML tags
-  - id: python-xss-string-concat
-    patterns:
-      - pattern: |
-          "..." + $VAR + "..."
-      - metavariable-pattern:
-          metavariable: $VAR
-          pattern: $INPUT
-      - pattern-not: |
-          "..." + str(int($VAR)) + "..."
+  # TAINT RULE: Function parameter flows into HTML output
+  - id: python-xss-taint-html-response
+    mode: taint
     message: >
-      User input is concatenated directly into an HTML string without escaping.
-      This can lead to Cross-Site Scripting (XSS).
-      Use a templating engine with auto-escaping or escape the input.
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 2. Format string with HTML content
-  - id: python-xss-format-string
-    patterns:
-      - pattern: $TEMPLATE % $INPUT
-      - metavariable-regex:
-          metavariable: $TEMPLATE
-          regex: .*<[a-zA-Z].*
-    message: >
-      User input is inserted into an HTML string via % formatting without escaping.
-      This can lead to Cross-Site Scripting (XSS).
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 3. F-string with HTML/script content (double-quoted)
-  - id: python-xss-fstring-double
-    pattern-regex: 'f"[^"]*(<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>][^"]*\{[^}]+\}|\{[^}]+\}[^"]*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>])[^"]*"'
-    message: >
-      User input is inserted into an HTML/script string via f-string without escaping.
-      This can lead to Cross-Site Scripting (XSS).
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 3b. F-string with HTML/script content (single-quoted)
-  - id: python-xss-fstring-single
-    pattern-regex: "f'[^']*(<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\\s>][^']*\\{[^}]+\\}|\\{[^}]+\\}[^']*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\\s>])[^']*'"
-    message: >
-      User input is inserted into an HTML/script string via f-string without escaping.
-      This can lead to Cross-Site Scripting (XSS).
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 4. markupsafe.Markup wrapping untrusted input
-  - id: python-xss-markup-unsafe
-    patterns:
-      - pattern: Markup($INPUT)
-      - pattern-not: Markup("")
-    message: >
-      markupsafe.Markup() marks a string as safe HTML, bypassing auto-escaping.
-      If the input contains user-controlled data, this leads to XSS.
-      Use Markup.escape() instead, or pass escaped content.
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 5. Markup() with % formatting
-  - id: python-xss-markup-format
-    pattern: Markup("...") % $INPUT
-    message: >
-      markupsafe.Markup() with % formatting can lead to XSS if the input
-      is not properly escaped. The % operator on Markup does escape arguments,
-      but this pattern should be reviewed carefully.
-    languages: [python]
-    severity: INFO
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: LOW
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 6. response.write with HTML
-  - id: python-xss-response-write
-    patterns:
-      - pattern: $RESPONSE.write("..." + $VAR + "...")
-    message: >
-      User input is written directly to an HTTP response with HTML content.
-      This can lead to Cross-Site Scripting (XSS).
-      Use a templating engine with auto-escaping.
+      User-controlled input flows into an HTML string without sanitization.
+      This can lead to Cross-Site Scripting (XSS). Escape user input with
+      html.escape() or markupsafe.escape() before embedding in HTML.
     languages: [python]
     severity: WARNING
     metadata:
@@ -141,35 +22,62 @@ rules:
       category: security
       technology:
         - python
+    pattern-sources:
+      # Function parameters are potential user input
+      - patterns:
+          - pattern: |
+              def $FUNC(..., $PARAM, ...):
+                  ...
+          - focus-metavariable: $PARAM
+    pattern-sinks:
+      # String concatenation with HTML tags
+      - patterns:
+          - pattern: |
+              "..." + $SINK + "..."
+          - focus-metavariable: $SINK
+      # F-string with HTML content
+      - patterns:
+          - pattern: |
+              f"...{$SINK}..."
+          - focus-metavariable: $SINK
+      # Percent formatting
+      - patterns:
+          - pattern: $TEMPLATE % $SINK
+          - focus-metavariable: $SINK
+      # .format() call
+      - patterns:
+          - pattern: $TEMPLATE.format(..., $SINK, ...)
+          - focus-metavariable: $SINK
+      # response.write
+      - patterns:
+          - pattern: $RESPONSE.write($SINK)
+          - focus-metavariable: $SINK
+      # Markup() wrapping raw input
+      - patterns:
+          - pattern: Markup($SINK)
+          - focus-metavariable: $SINK
+      # Markup() with format
+      - patterns:
+          - pattern: Markup(...) % $SINK
+          - focus-metavariable: $SINK
+    pattern-sanitizers:
+      # html.escape()
+      - pattern: html.escape(...)
+      # markupsafe.escape()
+      - pattern: escape(...)
+      # int/float casting
+      - pattern: int(...)
+      - pattern: float(...)
+      # str() on numeric
+      - pattern: str(int(...))
 
-  # 7. .format() with HTML content
-  - id: python-xss-dot-format
-    patterns:
-      - pattern: $TEMPLATE.format(...)
-      - metavariable-regex:
-          metavariable: $TEMPLATE
-          regex: .*<[a-zA-Z].*
+  # TAINT RULE: Flask-specific XSS
+  - id: python-xss-taint-flask
+    mode: taint
     message: >
-      User input is inserted into an HTML string via .format() without escaping.
-      This can lead to Cross-Site Scripting (XSS).
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 8. render_template_string (Jinja2 SSTI / XSS)
-  - id: python-xss-render-template-string
-    pattern: render_template_string($INPUT, ...)
-    message: >
-      render_template_string() with user-controlled input can lead to
-      Server-Side Template Injection (SSTI) and XSS. Use render_template()
-      with a file-based template instead.
+      User-controlled input flows into a Flask response without sanitization.
+      Use render_template() with auto-escaping instead of render_template_string()
+      or make_response() with raw HTML.
     languages: [python]
     severity: ERROR
     metadata:
@@ -181,3 +89,191 @@ rules:
       technology:
         - python
         - flask
+    pattern-sources:
+      - patterns:
+          - pattern: |
+              def $FUNC(..., $PARAM, ...):
+                  ...
+          - focus-metavariable: $PARAM
+    pattern-sinks:
+      # render_template_string
+      - pattern: render_template_string(...)
+      # make_response with HTML
+      - patterns:
+          - pattern: make_response($SINK)
+          - focus-metavariable: $SINK
+    pattern-sanitizers:
+      - pattern: html.escape(...)
+      - pattern: escape(...)
+      - pattern: int(...)
+
+  # ============================================================
+  # Regex-based rules (kept for patterns taint can't catch,
+  # e.g. when we don't know the source context)
+  # ============================================================
+
+  # String concatenation with HTML tags
+  - id: python-xss-string-concat
+    patterns:
+      - pattern: |
+          "..." + $VAR + "..."
+      - metavariable-pattern:
+          metavariable: $VAR
+          pattern: $INPUT
+      - pattern-not: |
+          "..." + str(int($VAR)) + "..."
+    message: >
+      User input may be concatenated directly into an HTML string without escaping.
+      This can lead to Cross-Site Scripting (XSS).
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # Format string with HTML content
+  - id: python-xss-format-string
+    patterns:
+      - pattern: $TEMPLATE % $INPUT
+      - metavariable-regex:
+          metavariable: $TEMPLATE
+          regex: .*<[a-zA-Z].*
+    message: >
+      User input is inserted into an HTML string via % formatting without escaping.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # markupsafe.Markup wrapping untrusted input
+  - id: python-xss-markup-unsafe
+    patterns:
+      - pattern: Markup($INPUT)
+      - pattern-not: Markup("")
+    message: >
+      markupsafe.Markup() marks a string as safe HTML, bypassing auto-escaping.
+      If the input contains user-controlled data, this leads to XSS.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # Markup() with % formatting
+  - id: python-xss-markup-format
+    pattern: Markup("...") % $INPUT
+    message: >
+      markupsafe.Markup() with % formatting — review carefully.
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: LOW
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # response.write with HTML
+  - id: python-xss-response-write
+    patterns:
+      - pattern: $RESPONSE.write("..." + $VAR + "...")
+    message: >
+      User input is written directly to an HTTP response with HTML content.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: HIGH
+      impact: HIGH
+      category: security
+      technology:
+        - python
+
+  # render_template_string (Flask SSTI / XSS)
+  - id: python-xss-render-template-string
+    pattern: render_template_string($INPUT, ...)
+    message: >
+      render_template_string() with user-controlled input can lead to
+      Server-Side Template Injection (SSTI) and XSS.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: HIGH
+      impact: HIGH
+      category: security
+      technology:
+        - python
+        - flask
+
+  # .format() with HTML content
+  - id: python-xss-dot-format
+    patterns:
+      - pattern: $TEMPLATE.format(...)
+      - metavariable-regex:
+          metavariable: $TEMPLATE
+          regex: .*<[a-zA-Z].*
+    message: >
+      User input is inserted into an HTML string via .format() without escaping.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # F-string with HTML/script content (double-quoted)
+  - id: python-xss-fstring-double
+    pattern-regex: 'f"[^"]*(<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>][^"]*\{[^}]+\}|\{[^}]+\}[^"]*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>])[^"]*"'
+    message: >
+      User input in f-string with HTML tags — potential XSS.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # F-string with HTML/script content (single-quoted)
+  - id: python-xss-fstring-single
+    pattern-regex: "f'[^']*(<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\\s>][^']*\\{[^}]+\\}|\\{[^}]+\\}[^']*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\\s>])[^']*'"
+    message: >
+      User input in f-string with HTML tags — potential XSS.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
