@@ -1,0 +1,104 @@
+name: Adversarial Test (On-Demand)
+
+on:
+  workflow_dispatch:
+    inputs:
+      num_files:
+        description: 'Number of vulnerable files for Devin to generate'
+        required: false
+        default: '3'
+      categories:
+        description: 'Vulnerability categories (comma-separated, or "all")'
+        required: false
+        default: 'all'
+      wait_for_session:
+        description: 'Wait for Devin session to complete before evaluating'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  generate-adversarial-code:
+    name: Generate Adversarial Code via Devin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vuln-remediation-system
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+
+      - name: Create adversarial Devin session
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          TEST_SUITE_REPO: ishi-gupta/vuln-test-suite
+          INPUT_NUM_FILES: ${{ github.event.inputs.num_files }}
+          INPUT_CATEGORIES: ${{ github.event.inputs.categories }}
+          INPUT_WAIT: ${{ github.event.inputs.wait_for_session }}
+        run: |
+          python -m automation.adversarial_generator \
+            --mode generate \
+            --num-files "$INPUT_NUM_FILES" \
+            $( [ "$INPUT_CATEGORIES" != "all" ] && echo "--categories $INPUT_CATEGORIES" || echo "" ) \
+            $( [ "$INPUT_WAIT" = "false" ] && echo "--no-wait" || echo "" )
+
+      - name: Upload session records
+        uses: actions/upload-artifact@v4
+        with:
+          name: adversarial-session-records
+          path: data/adversarial_sessions.json
+
+  evaluate-results:
+    name: Evaluate Scanner Against Test Suite
+    runs-on: ubuntu-latest
+    needs: generate-adversarial-code
+    if: ${{ github.event.inputs.wait_for_session == 'true' }}
+    steps:
+      - name: Checkout vuln-remediation-system
+        uses: actions/checkout@v4
+
+      - name: Checkout vuln-test-suite
+        uses: actions/checkout@v4
+        with:
+          repository: ishi-gupta/vuln-test-suite
+          path: vuln-test-suite
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install scanner dependencies
+        run: |
+          pip install -e ".[scanners]"
+
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar xz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run scanner against test suite
+        run: |
+          python -m automation.adversarial_generator \
+            --mode evaluate \
+            --test-suite vuln-test-suite \
+            --scanner-repo .
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: adversarial-results
+          path: data/adversarial_results.json
