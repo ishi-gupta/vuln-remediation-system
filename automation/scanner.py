@@ -343,6 +343,22 @@ def scan_repo(
     return unique_findings, scan_run
 
 
+def format_scan_summary(scan_run: ScanRun) -> str:
+    """Format a human-readable scan summary for CI logs."""
+    lines = [
+        f"Scan ID:    {scan_run.scan_id}",
+        f"Target:     {scan_run.target_repo}",
+        f"Scanners:   {', '.join(scan_run.scanners_used)}",
+        f"Duration:   {scan_run.duration_seconds}s",
+        f"Findings:   {scan_run.total_findings}",
+        f"  Critical: {scan_run.critical}",
+        f"  High:     {scan_run.high}",
+        f"  Medium:   {scan_run.medium}",
+        f"  Low:      {scan_run.low}",
+    ]
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -362,5 +378,5 @@ if __name__ == "__main__":
     with open(args.output, "w") as f:
         json.dump(output, f, indent=2)
 
+    print(f"\n{format_scan_summary(scan_run)}")
     print(f"\nResults written to {args.output}")
-    print(f"Total: {scan_run.total_findings} | Critical: {scan_run.critical} | High: {scan_run.high} | Medium: {scan_run.medium} | Low: {scan_run.low}")
