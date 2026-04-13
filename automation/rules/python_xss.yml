@@ -51,9 +51,26 @@ rules:
       technology:
         - python
 
-  # 3. F-string with HTML/script content
-  - id: python-xss-fstring
-    pattern-regex: 'f"[^"]*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style)[^"]*\{[^}]+\}[^"]*"'
+  # 3. F-string with HTML/script content (double-quoted)
+  - id: python-xss-fstring-double
+    pattern-regex: 'f"[^"]*(<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>][^"]*\{[^}]+\}|\{[^}]+\}[^"]*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>])[^"]*"'
+    message: >
+      User input is inserted into an HTML/script string via f-string without escaping.
+      This can lead to Cross-Site Scripting (XSS).
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python
+
+  # 3b. F-string with HTML/script content (single-quoted)
+  - id: python-xss-fstring-single
+    pattern-regex: "f'[^']*(<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\\s>][^']*\\{[^}]+\\}|\\{[^}]+\\}[^']*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\\s>])[^']*'"
     message: >
       User input is inserted into an HTML/script string via f-string without escaping.
       This can lead to Cross-Site Scripting (XSS).
