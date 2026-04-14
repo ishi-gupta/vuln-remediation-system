@@ -88,14 +88,16 @@ def group_findings(
 def _grouped_issue_title(
     findings: list[VulnerabilityFinding],
 ) -> str:
-    """Generate a GitHub Issue title for a group of related findings."""
+    """Generate a stable GitHub Issue title for a group of related findings.
+
+    The title intentionally omits the finding count and file path so that
+    deduplication (which matches on exact title) works correctly across scans
+    even when the number of affected locations changes.
+    """
     first = findings[0]
     severity_tag = f"[{first.severity.value.upper()}]"
     vuln_id = first.cve_id or first.cwe_id or first.scanner
-    count = len(findings)
-    if count == 1:
-        return first.to_issue_title()
-    return f"{severity_tag} {vuln_id}: {first.title} ({count} locations)"
+    return f"{severity_tag} {vuln_id}: {first.title}"
 
 
 def _grouped_issue_body(

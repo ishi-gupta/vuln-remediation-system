@@ -236,22 +236,36 @@ class TestGroupFindings:
 class TestGroupedIssueTitle:
     """Tests for the grouped issue title generator."""
 
-    def test_single_finding_uses_original_title(self) -> None:
+    def test_single_finding_stable_title(self) -> None:
         f = _make_finding()
         title = _grouped_issue_title([f])
-        # Single finding falls back to to_issue_title()
-        assert title == f.to_issue_title()
+        # Title should be stable: [SEVERITY] vuln_id: title (no count, no path)
+        assert "[HIGH]" in title
+        assert "CWE-78" in title
+        assert f.title in title
+        assert f.file_path not in title
 
-    def test_multiple_findings_shows_count(self) -> None:
+    def test_multiple_findings_stable_title(self) -> None:
         findings = [
             _make_finding(file_path="a.py"),
             _make_finding(file_path="b.py"),
             _make_finding(file_path="c.py"),
         ]
         title = _grouped_issue_title(findings)
-        assert "(3 locations)" in title
+        # Title must NOT include count so dedup works across scans
+        assert "(3 locations)" not in title
         assert "[HIGH]" in title
         assert "CWE-78" in title
+
+    def test_title_stable_across_different_counts(self) -> None:
+        """Title must be identical regardless of how many findings are in the group."""
+        one = [_make_finding(file_path="a.py")]
+        three = [
+            _make_finding(file_path="a.py"),
+            _make_finding(file_path="b.py"),
+            _make_finding(file_path="c.py"),
+        ]
+        assert _grouped_issue_title(one) == _grouped_issue_title(three)
 
     def test_title_uses_cve_if_present(self) -> None:
         f1 = _make_finding(cwe_id="", file_path="a.py")
