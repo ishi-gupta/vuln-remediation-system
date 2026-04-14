@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from automation.models import VulnerabilityFinding, Severity, ScanType, ScanRun
+from automation.models import VulnerabilityFinding, Severity, ScanType, ScanRun, SystemState
+from automation.config import STATE_FILE
 
 
 def clone_repo(repo_url: str, dest: str) -> str:
@@ -361,6 +362,23 @@ if __name__ == "__main__":
 
     with open(args.output, "w") as f:
         json.dump(output, f, indent=2)
+
+    # Persist scan run and findings into data/state.json
+    state_path = str(STATE_FILE)
+    state = SystemState.load(state_path)
+
+    state.scan_runs.append(scan_run.to_dict())
+
+    # Deduplicate findings by finding_id
+    existing_ids = {f.get("finding_id") for f in state.findings}
+    for finding in findings:
+        fd = finding.to_dict()
+        if fd["finding_id"] not in existing_ids:
+            state.findings.append(fd)
+            existing_ids.add(fd["finding_id"])
+
+    state.save(state_path)
+    print(f"State persisted to {state_path}")
 
     print(f"\nResults written to {args.output}")
     print(f"Total: {scan_run.total_findings} | Critical: {scan_run.critical} | High: {scan_run.high} | Medium: {scan_run.medium} | Low: {scan_run.low}")
