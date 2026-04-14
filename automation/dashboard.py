@@ -145,6 +145,9 @@ def _load_adversarial_results() -> dict[str, Any]:
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
+    if not isinstance(raw, dict):
+        return {}
+
     # Already in frontend format
     if "overall_detection_rate" in raw and isinstance(raw.get("categories"), list):
         return raw
