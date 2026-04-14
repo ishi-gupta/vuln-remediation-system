@@ -13,7 +13,8 @@ GITHUB_API_BASE = "https://api.github.com"
 
 # Devin API Configuration
 DEVIN_API_KEY = os.environ.get("DEVIN_API_KEY", "")
-DEVIN_API_BASE = "https://api.devin.ai/v1"
+DEVIN_API_BASE = "https://api.devin.ai/v3"
+DEVIN_ORG_ID = os.environ.get("DEVIN_ORG_ID", "")
 
 # Scanning Configuration
 SCAN_SEVERITY_THRESHOLD = os.environ.get("SCAN_SEVERITY_THRESHOLD", "LOW")
