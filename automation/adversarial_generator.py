@@ -403,6 +403,7 @@ def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
         f"{DEVIN_API_BASE}/sessions",
         headers=headers,
         json=payload,
+        timeout=60,
     )
 
     if resp.status_code in (200, 201):
@@ -566,7 +567,10 @@ def main() -> int:
         print("\n" + "=" * 60)
         print("SAMPLE BABY DEVIN PROMPT (Bug 1)")
         print("=" * 60)
-        print(generate_baby_devin_prompt(bug_specs[0]))
+        if bug_specs:
+            print(generate_baby_devin_prompt(bug_specs[0]))
+        else:
+            print("(no bugs planned — nothing to show)")
 
         return 0
 
