@@ -351,6 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--target", required=True, help="GitHub repo (owner/repo) or local path")
     parser.add_argument("--output", default="scan_results.json", help="Output file path")
     parser.add_argument("--scanners", nargs="+", default=None, help="Scanners to run (bandit semgrep pip-audit gitleaks)")
+    parser.add_argument("--no-persist-state", action="store_true", help="Skip persisting results to data/state.json")
     args = parser.parse_args()
 
     findings, scan_run = scan_repo(args.target, scanners=args.scanners)
@@ -364,21 +365,22 @@ if __name__ == "__main__":
         json.dump(output, f, indent=2)
 
     # Persist scan run and findings into data/state.json
-    state_path = str(STATE_FILE)
-    state = SystemState.load(state_path)
+    if not args.no_persist_state:
+        state_path = str(STATE_FILE)
+        state = SystemState.load(state_path)
 
-    state.scan_runs.append(scan_run.to_dict())
+        state.scan_runs.append(scan_run.to_dict())
 
-    # Deduplicate findings by finding_id
-    existing_ids = {f.get("finding_id") for f in state.findings}
-    for finding in findings:
-        fd = finding.to_dict()
-        if fd["finding_id"] not in existing_ids:
-            state.findings.append(fd)
-            existing_ids.add(fd["finding_id"])
+        # Deduplicate findings by finding_id
+        existing_ids = {f.get("finding_id") for f in state.findings}
+        for finding in findings:
+            fd = finding.to_dict()
+            if fd["finding_id"] not in existing_ids:
+                state.findings.append(fd)
+                existing_ids.add(fd["finding_id"])
 
-    state.save(state_path)
-    print(f"State persisted to {state_path}")
+        state.save(state_path)
+        print(f"State persisted to {state_path}")
 
     print(f"\nResults written to {args.output}")
     print(f"Total: {scan_run.total_findings} | Critical: {scan_run.critical} | High: {scan_run.high} | Medium: {scan_run.medium} | Low: {scan_run.low}")
