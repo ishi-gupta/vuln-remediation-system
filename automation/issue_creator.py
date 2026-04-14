@@ -90,9 +90,9 @@ def _grouped_issue_title(
 ) -> str:
     """Generate a stable GitHub Issue title for a group of related findings.
 
-    The title intentionally omits the finding count and file path so that
-    deduplication (which matches on exact title) works correctly across scans
-    even when the number of affected locations changes.
+    The title deliberately excludes the finding count and file path so that
+    it remains identical across scans even when the number of affected
+    locations changes.  This keeps title-based deduplication reliable.
     """
     first = findings[0]
     severity_tag = f"[{first.severity.value.upper()}]"
@@ -204,8 +204,25 @@ def ensure_labels_exist(repo: str, token: str) -> None:
             )
 
 
+def _normalize_old_title(title: str) -> str:
+    """Strip trailing ' in <filepath>' suffix from old per-file issue titles.
+
+    Old titles looked like ``[HIGH] CWE-78: Shell injection in app.py``.
+    New grouped titles omit the file path.  By normalizing old titles we
+    can deduplicate across the format transition without creating duplicates.
+    """
+    import re
+
+    return re.sub(r"\s+in\s+\S+$", "", title)
+
+
 def get_existing_issue_titles(repo: str, token: str) -> set[str]:
-    """Get titles of existing open issues with security+automated labels to avoid duplicates."""
+    """Get titles of existing open issues with security+automated labels to avoid duplicates.
+
+    Returns both the raw titles *and* normalized versions (old per-file
+    format stripped of file paths) so that deduplication works across the
+    title format transition.
+    """
     headers = _github_headers(token)
     titles: set[str] = set()
     page = 1
@@ -227,7 +244,14 @@ def get_existing_issue_titles(repo: str, token: str) -> set[str]:
         if not issues:
             break
         for issue in issues:
-            titles.add(issue["title"])
+            raw = issue["title"]
+            titles.add(raw)
+            # Also add normalized version so new grouped titles match old
+            # per-file titles (e.g. "[HIGH] CWE-78: Shell injection in app.py"
+            # normalizes to "[HIGH] CWE-78: Shell injection").
+            normalized = _normalize_old_title(raw)
+            if normalized != raw:
+                titles.add(normalized)
         page += 1
     return titles
 

@@ -260,8 +260,12 @@ def _save_session_record(record: dict) -> None:
     records_file = DATA_DIR / "adversarial_sessions.json"
     records = []
     if records_file.exists():
-        with open(records_file) as f:
-            records = json.load(f)
+        try:
+            with open(records_file) as f:
+                records = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Corrupted session records file; starting fresh")
+            records = []
     records.append(record)
     with open(records_file, "w") as f:
         json.dump(records, f, indent=2)
