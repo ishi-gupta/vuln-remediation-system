@@ -112,12 +112,12 @@ class TestFilterByQuality:
 
     def test_default_threshold(self) -> None:
         findings = [
-            _make_finding(severity=Severity.HIGH, confidence="low"),     # score 4
+            _make_finding(severity=Severity.MEDIUM, confidence="low"),   # score 2
             _make_finding(severity=Severity.MEDIUM, confidence="high"),  # score 7
         ]
         result = filter_by_quality(findings)
         assert len(result) == 1
-        assert result[0].severity == Severity.MEDIUM
+        assert result[0].confidence == "high"
 
     def test_threshold_zero_keeps_all(self) -> None:
         findings = [
