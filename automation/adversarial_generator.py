@@ -308,6 +308,9 @@ def run_evaluation(
 
     # Run the scanner
     scan_output = DATA_DIR / "adversarial_scan_results.json"
+    # Remove any stale output from a previous run so we don't read outdated results
+    if scan_output.exists():
+        scan_output.unlink()
     target = str(Path(test_suite_path).resolve())
 
     cmd = [
