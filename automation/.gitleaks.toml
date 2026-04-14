@@ -1,0 +1,7 @@
+[allowlist]
+  description = "Known-safe documentation and example patterns"
+  paths = [
+    '''docs/''',
+    '''.*\.mdx?$''',
+    '''.*docusaurus.*''',
+  ]
