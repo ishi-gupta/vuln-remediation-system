@@ -39,7 +39,7 @@ QUALITY_SCORES: dict[tuple[str, str], int] = {
     ("low", "medium"): 2,
     ("low", "low"): 1,
 }
-DEFAULT_MIN_QUALITY_SCORE = 5
+DEFAULT_MIN_QUALITY_SCORE = 3
 
 
 def quality_score(finding: VulnerabilityFinding) -> int:

@@ -1,0 +1,88 @@
+rules:
+  # ============================================================
+  # Python Path Traversal Detection Rules (CWE-22)
+  # Detects file operations with user-controlled paths that
+  # could allow directory traversal (../) attacks.
+  # ============================================================
+
+  # 1. open() with string concatenation (direct or via variable)
+  - id: python-path-traversal-open-concat
+    patterns:
+      - pattern-either:
+          - pattern: open($BASE + $INPUT, ...)
+          - pattern: |
+              with open($BASE + $INPUT, ...) as $F:
+                  ...
+          - pattern: |
+              $PATH = $BASE + $INPUT
+              ...
+              open($PATH, ...)
+          - pattern: |
+              $PATH = $BASE + $INPUT
+              ...
+              with open($PATH, ...) as $F:
+                  ...
+    message: >
+      File opened with a path constructed via string concatenation.
+      If the input is user-controlled, an attacker can use "../" sequences
+      to read or write arbitrary files. Validate and sanitize the path.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      confidence: MEDIUM
+      impact: HIGH
+      category: security
+      technology:
+        - python
+
+  # 2. open() with os.path.join (does not prevent ../)
+  - id: python-path-traversal-open-join
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $PATH = os.path.join($BASE, $INPUT)
+              ...
+              open($PATH, ...)
+          - pattern: |
+              $PATH = os.path.join($BASE, $INPUT)
+              ...
+              with open($PATH, ...) as $F:
+                  ...
+    message: >
+      File opened with a path built via os.path.join(). Note that
+      os.path.join() does NOT prevent directory traversal — an absolute
+      path or "../" sequences in the input can escape the base directory.
+      Use os.path.realpath() and verify the result is under the intended root.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      confidence: MEDIUM
+      impact: HIGH
+      category: security
+      technology:
+        - python
+
+  # 3. os.listdir with os.path.join (directory listing with user input)
+  - id: python-path-traversal-listdir
+    pattern: |
+      $PATH = os.path.join($BASE, $INPUT)
+      ...
+      os.listdir($PATH)
+    message: >
+      Directory listing with a path built from user input via os.path.join().
+      An attacker may use "../" sequences to list arbitrary directories.
+      Validate and canonicalize the path before use.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe:
+        - "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      confidence: MEDIUM
+      impact: MEDIUM
+      category: security
+      technology:
+        - python

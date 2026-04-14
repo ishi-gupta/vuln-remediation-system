@@ -128,8 +128,8 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Semgrep (multi-language SAST) and return normalized findings."""
     findings = []
     try:
-        # Build config args: use curated rulesets instead of "auto" to reduce noise
-        config_args = ["--config", "p/security-audit", "--config", "p/secrets"]
+        # Build config args: use curated rulesets for targeted, low-noise detection
+        config_args = ["--config", "p/security-audit", "--config", "p/secrets", "--config", "p/owasp-top-ten"]
         custom_rules = Path(__file__).parent / "rules"
         if custom_rules.is_dir():
             config_args.extend(["--config", str(custom_rules)])
@@ -199,10 +199,6 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
                     cwe_id = cwe_id.split(":")[0].strip()
 
                 confidence = metadata.get("confidence", "MEDIUM")
-
-                # Skip low-confidence results to reduce noise
-                if confidence.upper() == "LOW":
-                    continue
 
                 findings.append(VulnerabilityFinding(
                     scanner="semgrep",

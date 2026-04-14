@@ -51,27 +51,6 @@ rules:
       technology:
         - python
 
-  # 3. F-string with HTML/script content
-  - id: python-xss-fstring
-    pattern: |
-      f"...{$VAR}..."
-    metavariable-regex:
-      metavariable: $__TEXT__
-      regex: .*<(script|div|span|p|h[1-6]|a|img|iframe|body|html|form|input|button|style|link|meta|table|tr|td|th|ul|ol|li|br|hr)[\s>].*
-    message: >
-      User input is inserted into an HTML/script string via f-string without escaping.
-      This can lead to Cross-Site Scripting (XSS).
-    languages: [python]
-    severity: WARNING
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: MEDIUM
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
   # 4. markupsafe.Markup wrapping untrusted input
   - id: python-xss-markup-unsafe
     patterns:
@@ -92,25 +71,7 @@ rules:
       technology:
         - python
 
-  # 5. Markup() with % formatting
-  - id: python-xss-markup-format
-    pattern: Markup("...") % $INPUT
-    message: >
-      markupsafe.Markup() with % formatting can lead to XSS if the input
-      is not properly escaped. The % operator on Markup does escape arguments,
-      but this pattern should be reviewed carefully.
-    languages: [python]
-    severity: INFO
-    metadata:
-      cwe:
-        - "CWE-79: Improper Neutralization of Input During Web Page Generation"
-      confidence: LOW
-      impact: MEDIUM
-      category: security
-      technology:
-        - python
-
-  # 6. response.write with HTML
+  # 5. response.write with HTML
   - id: python-xss-response-write
     patterns:
       - pattern: $RESPONSE.write("..." + $VAR + "...")
