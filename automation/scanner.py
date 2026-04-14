@@ -5,6 +5,7 @@ Normalizes all results into a common finding format.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,53 @@ from pathlib import Path
 from typing import Optional
 
 from automation.models import VulnerabilityFinding, Severity, ScanType, ScanRun
+
+
+# ---------------------------------------------------------------------------
+# Gitleaks post-processing allowlist
+# ---------------------------------------------------------------------------
+
+# Patterns for paths that are known-safe (documentation, config examples).
+# These are applied as post-processing filters so that gitleaks still scans
+# everything — we just discard findings from known-noise paths.
+_GITLEAKS_ALLOWLIST_PATTERNS: list[re.Pattern[str]] = []
+
+
+def _load_gitleaks_allowlist() -> list[re.Pattern[str]]:
+    """Load gitleaks path allowlist patterns from .gitleaks.toml (cached)."""
+    if _GITLEAKS_ALLOWLIST_PATTERNS:
+        return _GITLEAKS_ALLOWLIST_PATTERNS
+
+    config_path = Path(__file__).parent / ".gitleaks.toml"
+    if not config_path.exists():
+        return _GITLEAKS_ALLOWLIST_PATTERNS
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        # Python < 3.11 fallback — try third-party package
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            return _GITLEAKS_ALLOWLIST_PATTERNS
+
+    try:
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+        for pattern_str in data.get("allowlist", {}).get("paths", []):
+            _GITLEAKS_ALLOWLIST_PATTERNS.append(re.compile(pattern_str))
+    except Exception:
+        pass  # If config is malformed, scan without filtering
+
+    return _GITLEAKS_ALLOWLIST_PATTERNS
+
+
+def _is_gitleaks_allowed(file_path: str, patterns: list[re.Pattern[str]]) -> bool:
+    """Check whether a file path matches any gitleaks allowlist pattern."""
+    for pattern in patterns:
+        if pattern.search(file_path):
+            return True
+    return False
 
 
 def clone_repo(repo_url: str, dest: str) -> str:
@@ -86,22 +134,38 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
         if custom_rules.is_dir():
             config_args.extend(["--config", str(custom_rules)])
 
-        # Copy .semgrepignore to target repo so semgrep picks it up
+        # Copy .semgrepignore to target repo so semgrep picks it up.
+        # Save any existing file so we can restore it afterwards.
         semgrepignore_src = Path(__file__).parent / ".semgrepignore"
-        if semgrepignore_src.exists():
-            shutil.copy2(semgrepignore_src, Path(repo_path) / ".semgrepignore")
+        target_semgrepignore = Path(repo_path) / ".semgrepignore"
+        original_semgrepignore: Optional[bytes] = None
+        had_original_semgrepignore = target_semgrepignore.exists()
 
-        result = subprocess.run(
-            [
-                "semgrep", "scan",
-                *config_args,
-                "--json",
-                repo_path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        if had_original_semgrepignore:
+            original_semgrepignore = target_semgrepignore.read_bytes()
+
+        try:
+            if semgrepignore_src.exists():
+                shutil.copy2(semgrepignore_src, target_semgrepignore)
+
+            result = subprocess.run(
+                [
+                    "semgrep", "scan",
+                    *config_args,
+                    "--json",
+                    repo_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        finally:
+            # Restore or clean up .semgrepignore in the target repo
+            if had_original_semgrepignore and original_semgrepignore is not None:
+                target_semgrepignore.write_bytes(original_semgrepignore)
+            elif not had_original_semgrepignore and target_semgrepignore.exists():
+                target_semgrepignore.unlink()
+
         print(f"[semgrep] returncode={result.returncode}")
         if result.stderr:
             print(f"[semgrep] stderr: {result.stderr[:500]}")
@@ -228,16 +292,11 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = tmp.name
 
-        # Use custom config with allowlist if available
-        gitleaks_config = Path(__file__).parent / ".gitleaks.toml"
-        config_args = ["--config", str(gitleaks_config)] if gitleaks_config.exists() else []
-
         subprocess.run(
             [
                 "gitleaks", "detect",
                 "--source", repo_path,
                 "--no-git",
-                *config_args,
                 "--report-format", "json",
                 "--report-path", tmp_path,
                 "--no-banner",
@@ -252,8 +311,12 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
                 content = f.read()
             if content.strip():
                 data = json.loads(content)
+                # Post-process: filter out known-safe documentation patterns
+                gitleaks_allowlist_patterns = _load_gitleaks_allowlist()
                 for item in data:
                     rel_path = item.get("File", "")
+                    if _is_gitleaks_allowed(rel_path, gitleaks_allowlist_patterns):
+                        continue
                     findings.append(VulnerabilityFinding(
                         scanner="gitleaks",
                         scan_type=ScanType.SECRET_DETECTION,
