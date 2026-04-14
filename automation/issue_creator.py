@@ -16,13 +16,146 @@ from automation.config import (
     GITHUB_API_BASE,
     GITHUB_REPO,
     MAX_ISSUES_PER_RUN,
-    SEVERITY_LABELS,
-    SCAN_TYPE_LABELS,
-    SYSTEM_LABELS,
 )
 from automation.models import VulnerabilityFinding, Severity, ScanType
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Quality scoring (severity × confidence)
+# ---------------------------------------------------------------------------
+
+QUALITY_SCORES: dict[tuple[str, str], int] = {
+    ("critical", "high"): 10,
+    ("critical", "medium"): 9,
+    ("critical", "low"): 7,
+    ("high", "high"): 9,
+    ("high", "medium"): 7,
+    ("high", "low"): 4,
+    ("medium", "high"): 7,
+    ("medium", "medium"): 5,
+    ("medium", "low"): 2,
+    ("low", "high"): 4,
+    ("low", "medium"): 2,
+    ("low", "low"): 1,
+}
+DEFAULT_MIN_QUALITY_SCORE = 5
+
+
+def quality_score(finding: VulnerabilityFinding) -> int:
+    """Compute a composite quality score from severity and confidence."""
+    key = (finding.severity.value, finding.confidence.lower())
+    return QUALITY_SCORES.get(key, 3)
+
+
+def filter_by_quality(
+    findings: list[VulnerabilityFinding],
+    min_score: int = DEFAULT_MIN_QUALITY_SCORE,
+) -> list[VulnerabilityFinding]:
+    """Filter findings to only include those meeting the minimum quality score."""
+    return [f for f in findings if quality_score(f) >= min_score]
+
+
+def filter_by_severity(
+    findings: list[VulnerabilityFinding],
+    min_severity: str = "LOW",
+) -> list[VulnerabilityFinding]:
+    """Filter findings by minimum severity level (backward-compatible helper)."""
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    threshold = severity_order.get(min_severity.lower(), 3)
+    return [
+        f for f in findings
+        if severity_order.get(f.severity.value, 3) <= threshold
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Grouping related findings
+# ---------------------------------------------------------------------------
+
+
+def group_findings(
+    findings: list[VulnerabilityFinding],
+) -> dict[str, list[VulnerabilityFinding]]:
+    """Group findings by vulnerability type."""
+    groups: dict[str, list[VulnerabilityFinding]] = {}
+    for f in findings:
+        group_key = f"{f.scanner}:{f.severity.value}:{f.cwe_id or f.title[:60]}"
+        groups.setdefault(group_key, []).append(f)
+    return groups
+
+
+def _grouped_issue_title(
+    findings: list[VulnerabilityFinding],
+) -> str:
+    """Generate a GitHub Issue title for a group of related findings."""
+    first = findings[0]
+    severity_tag = f"[{first.severity.value.upper()}]"
+    vuln_id = first.cve_id or first.cwe_id or first.scanner
+    count = len(findings)
+    if count == 1:
+        return first.to_issue_title()
+    return f"{severity_tag} {vuln_id}: {first.title} ({count} locations)"
+
+
+def _grouped_issue_body(
+    findings: list[VulnerabilityFinding],
+    repo: str,
+) -> str:
+    """Generate a GitHub Issue body for a group of related findings."""
+    first = findings[0]
+    lines = [
+        f"## Vulnerability: {first.title}",
+        "",
+        f"**Scanner:** {first.scanner}",
+        f"**Type:** {first.scan_type.value}",
+        f"**Severity:** {first.severity.value.upper()}",
+        f"**Confidence:** {first.confidence}",
+    ]
+
+    if first.cwe_id:
+        cwe_num = first.cwe_id.split("-")[-1]
+        lines.append(
+            f"**CWE:** [{first.cwe_id}](https://cwe.mitre.org/data/definitions/{cwe_num}.html)"
+        )
+    if first.cve_id:
+        lines.append(
+            f"**CVE:** [{first.cve_id}](https://nvd.nist.gov/vuln/detail/{first.cve_id})"
+        )
+
+    lines.append("")
+    lines.append("### Description")
+    lines.append(first.description)
+
+    lines.append("")
+    lines.append(f"### Affected Locations (found in {len(findings)} locations)")
+    lines.append("")
+    lines.append("| File | Line |")
+    lines.append("|------|------|")
+    for f in findings:
+        file_url = f"https://github.com/{repo}/blob/main/{f.file_path}"
+        if f.line_number:
+            file_url += f"#L{f.line_number}"
+        line_num = str(f.line_number) if f.line_number else "—"
+        lines.append(f"| [{f.file_path}]({file_url}) | {line_num} |")
+
+    if first.remediation:
+        lines.append("")
+        lines.append("### Recommended Fix")
+        lines.append(first.remediation)
+
+    if first.reference_url:
+        lines.append("")
+        lines.append("### References")
+        lines.append(f"- {first.reference_url}")
+
+    lines.append("")
+    lines.append("---")
+    lines.append(
+        "*This issue was automatically created by the Vulnerability Remediation System.*"
+    )
+    return "\n".join(lines)
+
 
 # Label colours — kept in sync with the dashboard expectations.
 LABEL_COLORS: dict[str, str] = {
@@ -102,9 +235,12 @@ def create_github_issues(
     repo: Optional[str] = None,
     token: Optional[str] = None,
     max_issues: Optional[int] = None,
+    min_quality_score: int = DEFAULT_MIN_QUALITY_SCORE,
 ) -> list[dict]:
     """
-    Create GitHub Issues for each finding.
+    Create GitHub Issues for each finding, grouped by vulnerability type.
+
+    Applies quality-score filtering before grouping and issue creation.
 
     Returns a list of dicts with keys: finding_id, issue_number, issue_url, title.
     """
@@ -118,6 +254,18 @@ def create_github_issues(
 
     headers = _github_headers(token)
 
+    # --- Quality-score filtering ---
+    before_count = len(findings)
+    findings = filter_by_quality(findings, min_score=min_quality_score)
+    filtered_out = before_count - len(findings)
+    if filtered_out:
+        logger.info(
+            "Filtered out %d findings below quality score %d (kept %d)",
+            filtered_out,
+            min_quality_score,
+            len(findings),
+        )
+
     # Ensure all required labels exist in the repo
     ensure_labels_exist(repo, token)
 
@@ -128,27 +276,34 @@ def create_github_issues(
     created_issues: list[dict] = []
     skipped = 0
 
-    # Sort by severity (critical first)
+    # --- Group related findings into single issues ---
+    groups = group_findings(findings)
+
+    # Sort groups by highest severity (critical first)
     severity_order = {
         Severity.CRITICAL: 0,
         Severity.HIGH: 1,
         Severity.MEDIUM: 2,
         Severity.LOW: 3,
     }
-    sorted_findings = sorted(
-        findings, key=lambda f: severity_order.get(f.severity, 3)
+    sorted_groups = sorted(
+        groups.values(),
+        key=lambda g: severity_order.get(g[0].severity, 3),
     )
 
-    for finding in sorted_findings[:max_issues]:
-        title = finding.to_issue_title()
+    for group in sorted_groups:
+        if len(created_issues) >= max_issues:
+            break
+
+        title = _grouped_issue_title(group)
 
         # Deduplicate against existing open issues
         if title in existing_titles:
             skipped += 1
             continue
 
-        body = finding.to_issue_body(repo)
-        labels = finding.to_issue_labels()
+        body = _grouped_issue_body(group, repo)
+        labels = group[0].to_issue_labels()
 
         resp = requests.post(
             f"{GITHUB_API_BASE}/repos/{repo}/issues",
@@ -164,7 +319,7 @@ def create_github_issues(
             issue_data = resp.json()
             created_issues.append(
                 {
-                    "finding_id": finding.finding_id,
+                    "finding_id": group[0].finding_id,
                     "issue_number": issue_data["number"],
                     "issue_url": issue_data["html_url"],
                     "title": title,
@@ -181,8 +336,9 @@ def create_github_issues(
             )
 
     logger.info(
-        "Created %d issues, skipped %d duplicates",
+        "Created %d issues (%d groups), skipped %d duplicates",
         len(created_issues),
+        len(sorted_groups),
         skipped,
     )
     return created_issues
@@ -225,12 +381,36 @@ if __name__ == "__main__":
         default=MAX_ISSUES_PER_RUN,
         help=f"Max issues to create (default: {MAX_ISSUES_PER_RUN})",
     )
+    parser.add_argument(
+        "--min-quality-score",
+        type=int,
+        default=DEFAULT_MIN_QUALITY_SCORE,
+        help=f"Minimum quality score to include a finding (default: {DEFAULT_MIN_QUALITY_SCORE})",
+    )
+    parser.add_argument(
+        "--min-severity",
+        type=str,
+        default=None,
+        help="Minimum severity level (critical/high/medium/low). Applied before quality scoring.",
+    )
     args = parser.parse_args()
 
     findings = load_findings_from_json(args.input)
     logger.info("Loaded %d findings from %s", len(findings), args.input)
 
+    # Apply severity filter if specified (backward compatibility)
+    if args.min_severity:
+        findings = filter_by_severity(findings, min_severity=args.min_severity)
+        logger.info(
+            "After severity filter (>=%s): %d findings",
+            args.min_severity,
+            len(findings),
+        )
+
     issues = create_github_issues(
-        findings, repo=args.repo, max_issues=args.max_issues
+        findings,
+        repo=args.repo,
+        max_issues=args.max_issues,
+        min_quality_score=args.min_quality_score,
     )
     print(f"\nCreated {len(issues)} GitHub Issues")

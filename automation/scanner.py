@@ -5,6 +5,7 @@ Normalizes all results into a common finding format.
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -79,11 +80,16 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Semgrep (multi-language SAST) and return normalized findings."""
     findings = []
     try:
-        # Build config args: always use auto rules + custom rules if available
-        config_args = ["--config", "auto"]
+        # Build config args: use curated rulesets instead of "auto" to reduce noise
+        config_args = ["--config", "p/security-audit", "--config", "p/secrets"]
         custom_rules = Path(__file__).parent / "rules"
         if custom_rules.is_dir():
             config_args.extend(["--config", str(custom_rules)])
+
+        # Copy .semgrepignore to target repo so semgrep picks it up
+        semgrepignore_src = Path(__file__).parent / ".semgrepignore"
+        if semgrepignore_src.exists():
+            shutil.copy2(semgrepignore_src, Path(repo_path) / ".semgrepignore")
 
         result = subprocess.run(
             [
@@ -128,6 +134,12 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
                 if isinstance(cwe_id, str) and ":" in cwe_id:
                     cwe_id = cwe_id.split(":")[0].strip()
 
+                confidence = metadata.get("confidence", "MEDIUM")
+
+                # Skip low-confidence results to reduce noise
+                if confidence.upper() == "LOW":
+                    continue
+
                 findings.append(VulnerabilityFinding(
                     scanner="semgrep",
                     scan_type=ScanType.SAST,
@@ -138,7 +150,7 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
                     line_number=item.get("start", {}).get("line", 0),
                     code_snippet=extra.get("lines", "").strip(),
                     cwe_id=cwe_id,
-                    confidence=metadata.get("confidence", "MEDIUM").lower(),
+                    confidence=confidence.lower(),
                     remediation=metadata.get("fix", "Review the flagged code pattern."),
                     reference_url=metadata.get("source", ""),
                 ))
@@ -216,11 +228,16 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = tmp.name
 
+        # Use custom config with allowlist if available
+        gitleaks_config = Path(__file__).parent / ".gitleaks.toml"
+        config_args = ["--config", str(gitleaks_config)] if gitleaks_config.exists() else []
+
         subprocess.run(
             [
                 "gitleaks", "detect",
                 "--source", repo_path,
                 "--no-git",
+                *config_args,
                 "--report-format", "json",
                 "--report-path", tmp_path,
                 "--no-banner",
