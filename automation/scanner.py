@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from automation.config import SCAN_SEVERITY_THRESHOLD
 from automation.models import VulnerabilityFinding, Severity, ScanType, ScanRun
 
 
@@ -34,7 +35,7 @@ def run_bandit(repo_path: str) -> list[VulnerabilityFinding]:
     findings = []
     try:
         result = subprocess.run(
-            ["bandit", "-r", repo_path, "-f", "json", "-ll", "--quiet"],
+            ["bandit", "-r", repo_path, "-f", "json", "--quiet"],
             capture_output=True,
             text=True,
             timeout=300,
@@ -160,7 +161,8 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
     if not targets:
         return findings
 
-    for target in targets[:3]:  # Limit to avoid excessive scanning
+    print(f"[pip-audit] Found {len(targets)} requirement/config files to scan")
+    for target in targets:
         try:
             cmd = ["pip-audit", "-f", "json", "--desc"]
             if target.name.startswith("requirements"):
@@ -259,6 +261,28 @@ def run_gitleaks(repo_path: str) -> list[VulnerabilityFinding]:
     return findings
 
 
+def filter_by_severity(
+    findings: list[VulnerabilityFinding],
+    threshold: str = "LOW",
+) -> list[VulnerabilityFinding]:
+    """Filter findings to only include those at or above the given severity threshold.
+
+    Severity order (highest to lowest): CRITICAL > HIGH > MEDIUM > LOW.
+    A threshold of "LOW" keeps everything; "HIGH" keeps only HIGH and CRITICAL.
+    """
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    threshold_rank = severity_order.get(threshold.upper(), 3)
+
+    filtered = [
+        f for f in findings
+        if severity_order.get(f.severity.value.upper(), 3) <= threshold_rank
+    ]
+    dropped = len(findings) - len(filtered)
+    if dropped:
+        print(f"[scanner] Severity filter ({threshold}): kept {len(filtered)}, dropped {dropped}")
+    return filtered
+
+
 def deduplicate(findings: list[VulnerabilityFinding]) -> list[VulnerabilityFinding]:
     """Remove duplicate findings (same file + line + vulnerability type)."""
     seen: dict[str, VulnerabilityFinding] = {}
@@ -324,6 +348,11 @@ def scan_repo(
 
     # Deduplicate
     unique_findings = deduplicate(all_findings)
+
+    # Apply severity threshold filter from config
+    threshold = SCAN_SEVERITY_THRESHOLD
+    unique_findings = filter_by_severity(unique_findings, threshold)
+
     duration = time.time() - start_time
 
     # Build scan run metadata

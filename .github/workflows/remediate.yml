@@ -3,6 +3,11 @@ name: Remediation Trigger
 on:
   workflow_dispatch:
     inputs:
+      target_repo:
+        description: "Target repository to remediate (owner/repo format)"
+        required: false
+        default: "ishi-gupta/superset"
+        type: string
       issue_number:
         description: "Issue number in the target repo to remediate"
         required: false
@@ -35,9 +40,9 @@ jobs:
       - name: Run orchestrator (one-shot)
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_REPO: ishi-gupta/superset
+          GITHUB_REPO: ${{ github.event.inputs.target_repo || 'ishi-gupta/superset' }}
           DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
         run: |
           python -m automation.orchestrator \
-            --repo ishi-gupta/superset \
+            --repo "$GITHUB_REPO" \
             --one-shot
