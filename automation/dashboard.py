@@ -51,10 +51,9 @@ app.add_middleware(
 )
 
 FRONTEND_DIR = Path(__file__).parent.parent / "dashboard" / "dist"
-ADVERSARIAL_RESULTS_FILE = DATA_DIR / "adversarial_results.json"
 
 # ---------------------------------------------------------------------------
-# In-memory job tracker (for background scan / adversarial tasks)
+# In-memory job tracker (for background scan tasks)
 # ---------------------------------------------------------------------------
 
 _jobs: dict[str, dict[str, Any]] = {}
@@ -191,58 +190,6 @@ def _fetch_github_issues() -> list[dict[str, Any]]:
     return issues
 
 
-def _load_adversarial_results() -> dict[str, Any]:
-    """Load adversarial test results from disk and normalize to frontend format.
-
-    The frontend expects:
-      - overall_detection_rate: float (0.0–1.0+)
-      - categories: list of {name, total, detected, missed, rate}
-
-    The raw file may use:
-      - summary.overall_detection_rate_pct (percentage)
-      - categories as a dict keyed by category name
-    """
-    try:
-        with open(ADVERSARIAL_RESULTS_FILE) as f:
-            raw = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-    if not isinstance(raw, dict):
-        return {}
-
-    # Already in frontend format
-    if "overall_detection_rate" in raw and isinstance(raw.get("categories"), list):
-        return raw
-
-    # Transform from raw test-harness format
-    summary = raw.get("summary", {})
-    cats_raw = raw.get("categories", {})
-
-    overall_pct = summary.get("overall_detection_rate_pct", 0)
-    overall_rate = overall_pct / 100.0  # convert 233.3 → 2.333
-
-    categories: list[dict[str, Any]] = []
-    if isinstance(cats_raw, dict):
-        for name, info in cats_raw.items():
-            expected = info.get("expected_total", 0)
-            detected = info.get("detected", 0)
-            missed = max(0, expected - detected)
-            rate = (info.get("detection_rate_pct", 0)) / 100.0
-            display_name = name.replace("_", " ").title()
-            categories.append({
-                "name": display_name,
-                "total": expected,
-                "detected": detected,
-                "missed": missed,
-                "rate": rate,
-            })
-
-    return {
-        "overall_detection_rate": overall_rate,
-        "categories": categories,
-    }
-
 
 # ---------------------------------------------------------------------------
 # API Endpoints
@@ -302,7 +249,6 @@ async def metrics() -> dict[str, Any]:
         reverse=True,
     )[:10]
 
-    adversarial_results = _load_adversarial_results()
 
     return {
         "overview": {
@@ -316,7 +262,6 @@ async def metrics() -> dict[str, Any]:
         "remediation_status": remediation_status,
         "scan_history": scan_history,
         "recent_remediations": recent_remediations,
-        "adversarial_results": adversarial_results,
     }
 
 
@@ -338,19 +283,9 @@ async def sessions() -> dict[str, Any]:
     return {"sessions": state.active_sessions}
 
 
-@app.get("/api/adversarial")
-async def adversarial() -> dict[str, Any]:
-    results = _load_adversarial_results()
-    if not results:
-        return {
-            "message": "No adversarial test results available yet. Run the adversarial test suite to generate results.",
-            "results": {},
-        }
-    return {"results": results}
-
 
 # ---------------------------------------------------------------------------
-# Action Endpoints — trigger scan, adversarial, and orchestration
+# Action Endpoints — trigger scan and orchestration
 # ---------------------------------------------------------------------------
 
 @app.get("/api/jobs")
@@ -565,68 +500,6 @@ async def trigger_orchestration() -> dict[str, Any]:
 
     return {"job_id": job_id, "status": "running", "repo": repo}
 
-
-def _run_adversarial_background(job_id: str, repo: str) -> None:
-    """Background thread: generate buggy PRs on the target repo via Devin."""
-    try:
-        from automation.adversarial_generator import (
-            VULNERABILITY_CATEGORIES,
-            plan_bugs,
-            spawn_baby_devins,
-        )
-
-        categories = list(VULNERABILITY_CATEGORIES.keys())
-        _log_job(job_id, f"Starting adversarial generation for {repo}")
-        _log_job(job_id, f"Categories: {', '.join(categories)}")
-
-        # Plan 3 bugs across all categories
-        bug_specs = plan_bugs(categories=categories, count=3, target_repo=repo)
-        _log_job(job_id, f"Planned {len(bug_specs)} adversarial bugs")
-
-        for spec in bug_specs:
-            _log_job(job_id, f"  → {spec['bug_id']}: {spec['category']} / {spec['pattern_name']}")
-
-        # Spawn Baby Devin sessions to plant the bugs
-        sessions = spawn_baby_devins(bug_specs, api_key=DEVIN_API_KEY, max_concurrent=5)
-
-        spawned = [s for s in sessions if s["status"] == "spawned"]
-        failed = [s for s in sessions if s["status"] == "failed_to_spawn"]
-
-        for s in spawned:
-            _log_job(job_id, f"Session spawned: {s['bug_id']} → {s.get('session_url', 'N/A')}")
-        for s in failed:
-            _log_job(job_id, f"Session failed: {s['bug_id']}")
-
-        if spawned:
-            session_urls = [s.get("session_url", "N/A") for s in spawned]
-            _finish_job(job_id, status="completed", result={
-                "bugs_planned": len(bug_specs),
-                "sessions_spawned": len(spawned),
-                "sessions_failed": len(failed),
-                "session_urls": ", ".join(session_urls),
-            })
-        else:
-            _finish_job(job_id, status="failed", error="No Devin sessions could be created. Check DEVIN_API_KEY.")
-
-    except Exception as e:
-        logger.exception("Adversarial job %s failed", job_id)
-        _finish_job(job_id, status="failed", error=str(e))
-
-
-@app.post("/api/adversarial/generate")
-async def trigger_adversarial() -> dict[str, Any]:
-    """Trigger adversarial buggy PR generation via Devin."""
-    if not DEVIN_API_KEY:
-        return JSONResponse(status_code=400, content={"error": "DEVIN_API_KEY not configured"})
-
-    repo = GITHUB_REPO
-    if not repo:
-        return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
-    job_id = _create_job("adversarial")
-    thread = threading.Thread(target=_run_adversarial_background, args=(job_id, repo), daemon=True)
-    thread.start()
-
-    return {"job_id": job_id, "status": "running", "repo": repo}
 
 
 # ---------------------------------------------------------------------------
