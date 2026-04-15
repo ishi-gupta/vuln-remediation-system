@@ -121,24 +121,33 @@ python -m automation.orchestrator --repo ishi-gupta/superset --poll-interval 60
 
 ### Component 5: Adversarial Test Suite (`ishi-gupta/vuln-test-suite`)
 
-**What it does:** Plants known vulnerabilities in test code → runs scanner → measures detection rate.
+**What it does:** Simulates real engineers accidentally introducing security bugs, then measures whether the scanner catches them.
 
-**Planned vulnerability categories:**
-1. SQL injection
-2. XSS (cross-site scripting)
-3. Command injection
-4. Path traversal
-5. Hardcoded secrets
-6. Weak cryptography
-7. Insecure deserialization
+**How it works — the two-tier Devin architecture:**
 
-**How it works:**
-1. `vulnerable_code/` — Python files with intentional, clearly-marked vulnerabilities
-2. `test_harness/expected_findings.json` — ground truth (what SHOULD be detected)
-3. `test_harness/run_tests.py` — runs the scanner, compares results to ground truth
-4. Outputs `adversarial_results.json` with detection rate per category → feeds into dashboard
+1. **God Agent (parent Devin session)** — Plans a batch of realistic bugs across vulnerability categories. Decides which types of mistakes to simulate and how they should look like natural code a developer might write.
 
-**Status:** ❌ Not started. **Design not yet approved by user.**
+2. **Baby Devins (child sessions)** — Each child session acts as a "careless engineer." It writes a small, realistic piece of buggy code — complete with comments, error handling, and logging — that contains a specific vulnerability. It creates a PR on the target repo explaining what the bug is and why a developer might write it that way.
+
+3. **The scanner picks up the new PRs** → creates issues → the dashboard updates → the remediation orchestrator sends more Devin agents to fix them.
+
+**Vulnerability categories:**
+| Category | CWE | Example Pattern |
+|----------|-----|-----------------|
+| SQL Injection | CWE-89 | String concatenation in queries |
+| XSS | CWE-79 | Unescaped user input in HTML |
+| Command Injection | CWE-78 | `os.system()` with user input |
+| Path Traversal | CWE-22 | `open()` with user-controlled paths |
+| Hardcoded Secrets | CWE-798 | API keys and passwords in source |
+| Weak Cryptography | CWE-327 | MD5/SHA1 for security purposes |
+| Insecure Deserialization | CWE-502 | `pickle.loads()` on untrusted data |
+
+**Evaluation:**
+- `test_harness/expected_findings.json` — ground truth (what SHOULD be detected)
+- `test_harness/evaluate.py` — compares scan results to ground truth with ±5 line tolerance
+- Outputs `adversarial_results.json` with detection rate per category → feeds into the dashboard's Adversarial Testing tab
+
+**Status:** ✅ Built — 36 planted vulnerabilities across 7 categories, 72% overall detection rate.
 
 ---
 
