@@ -552,6 +552,10 @@ async def trigger_orchestration() -> dict[str, Any]:
     if not GITHUB_TOKEN:
         return JSONResponse(status_code=400, content={"error": "GITHUB_TOKEN not configured"})
 
+    from automation.config import DEVIN_ORG_ID
+    if not DEVIN_ORG_ID:
+        return JSONResponse(status_code=400, content={"error": "DEVIN_ORG_ID not configured (required for Devin API)"})
+
     repo = GITHUB_REPO
     if not repo:
         return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
@@ -594,12 +598,12 @@ def _run_adversarial_background(job_id: str, repo: str) -> None:
             _log_job(job_id, f"Session failed: {s['bug_id']}")
 
         if spawned:
+            session_urls = [s.get("session_url", "N/A") for s in spawned]
             _finish_job(job_id, status="completed", result={
                 "bugs_planned": len(bug_specs),
                 "sessions_spawned": len(spawned),
                 "sessions_failed": len(failed),
-                "sessions": spawned,
-                "categories": categories,
+                "session_urls": ", ".join(session_urls),
             })
         else:
             _finish_job(job_id, status="failed", error="No Devin sessions could be created. Check DEVIN_API_KEY.")
