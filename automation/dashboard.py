@@ -204,24 +204,29 @@ async def health() -> dict[str, Any]:
 async def metrics() -> dict[str, Any]:
     state = _load_state()
 
-    total_scans = len(state.scan_runs)
-    total_findings = len(state.findings)
-    issues_created = sum(r.get("issue_number", 0) > 0 for r in state.remediation_records)
+    # Derive issue counts from GitHub API (source of truth since scanning
+    # happens via GitHub Actions, not locally)
+    github_issues = _fetch_github_issues()
+    total_findings = len(github_issues)
+    issues_created = total_findings
     active_sessions = len([s for s in state.active_sessions if s.get("status") == "in_progress"])
 
-    # Severity breakdown from findings
+    # Severity breakdown from GitHub issues
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for f in state.findings:
-        sev = f.get("severity", "medium")
+    for issue in github_issues:
+        sev = issue.get("severity", "medium")
         if sev in severity_breakdown:
             severity_breakdown[sev] += 1
 
-    # Remediation status
+    # Remediation status from GitHub issues
     remediation_status = {"fixed": 0, "partial": 0, "failed": 0, "in_progress": 0, "pending": 0}
-    for r in state.remediation_records:
-        status = r.get("status", "pending")
-        if status in remediation_status:
-            remediation_status[status] += 1
+    for issue in github_issues:
+        if issue.get("remediation_failed"):
+            remediation_status["failed"] += 1
+        elif issue.get("has_remediation"):
+            remediation_status["in_progress"] += 1
+        else:
+            remediation_status["pending"] += 1
 
     # Success rate
     total_remediations = sum(remediation_status.values())
@@ -229,7 +234,8 @@ async def metrics() -> dict[str, Any]:
     if total_remediations > 0:
         success_rate = round((remediation_status["fixed"] / total_remediations) * 100, 1)
 
-    # Scan history
+    # Scan history from state (local records of when scans were triggered)
+    total_scans = len(state.scan_runs)
     scan_history = []
     for run in state.scan_runs:
         scan_history.append({
