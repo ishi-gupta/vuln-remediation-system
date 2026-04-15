@@ -8,7 +8,21 @@ Event-driven vulnerability remediation system with AI-assisted automation using 
 2. **Creates GitHub Issues** for each finding with CVE/CWE IDs and severity labels
 3. **Triggers Devin AI sessions** to automatically fix the vulnerabilities
 4. **Tracks everything** on a live observability dashboard
-5. **Stress-tests the scanner** with AI-generated adversarial bugs
+
+## Architecture
+
+```
+┌──────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌──────────────┐
+│   Scanner    │────▶│  Issue Creator   │────▶│  Orchestrator    │────▶│  Dashboard   │
+│              │     │                  │     │                  │     │              │
+│ • Bandit     │     │ • GitHub Issues  │     │ • Devin v3 API   │     │ • Metrics    │
+│ • Semgrep    │     │ • Severity labels│     │ • Session mgmt   │     │ • Issues     │
+│ • pip-audit  │     │ • Deduplication  │     │ • Status polling │     │ • Sessions   │
+│ • Gitleaks   │     │ • CWE/CVE refs   │     │ • Auto-labeling  │     │ • Charts     │
+└──────────────┘     └──────────────────┘     └──────────────────┘     └──────────────┘
+```
+
+**Event-driven flow:** Scan results trigger issue creation → new issues trigger Devin sessions → session status updates the dashboard. Can run via CLI, Docker, or GitHub Actions (scheduled daily or on push).
 
 ## The 3 Repos
 
@@ -18,45 +32,79 @@ Event-driven vulnerability remediation system with AI-assisted automation using 
 | **ishi-gupta/vuln-remediation-system** (this repo) | **Brain** — scanner, issue creator, orchestrator, dashboard |
 | [ishi-gupta/vuln-test-suite](https://github.com/ishi-gupta/vuln-test-suite) | **Red Team** — adversarial test suite that validates scanner detection |
 
-## How the Adversarial Suite Works
+## Quick Start (Docker)
 
-The adversarial test suite simulates **real engineers accidentally introducing security bugs**. It uses a two-tier Devin architecture:
-
-1. **God Agent (parent Devin session)** — Plans a batch of realistic bugs across vulnerability categories (SQL injection, XSS, command injection, etc.). Decides which types of mistakes to simulate and how they should look like natural code a developer might write.
-
-2. **Baby Devins (child sessions)** — Each child session acts as a "careless engineer." It writes a small, realistic piece of buggy code — complete with comments, error handling, and logging — that contains a specific vulnerability. It creates a PR on the target repo explaining what the bug is and why a developer might write it that way.
-
-3. **The scanner picks up the new PRs** → creates issues on the dashboard → the remediation orchestrator sends more Devin agents to fix them → the cycle continues.
-
-This creates a continuous adversarial loop: bugs get planted → the scanner catches them → Devin fixes them → the dashboard tracks the full lifecycle.
-
-The test suite also includes a **ground truth evaluator** that measures the scanner's detection rate per vulnerability category, identifying blind spots (e.g., which CWE categories the scanner misses).
-
-## Quick Start
-
-### Run the Scanner
 ```bash
-pip install bandit semgrep pip-audit
-python -m automation.scanner --target ishi-gupta/superset --output scan_results.json
+# 1. Clone the repo
+git clone https://github.com/ishi-gupta/vuln-remediation-system.git
+cd vuln-remediation-system
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your GITHUB_TOKEN, DEVIN_API_KEY, and DEVIN_ORG_ID
+
+# 3. Start the dashboard
+docker compose up dashboard
+
+# 4. Run the full pipeline
+docker compose run scanner              # Scan for vulnerabilities
+docker compose run issue-creator         # Create GitHub issues
+docker compose run orchestrator          # Trigger Devin remediation
 ```
 
-### Create GitHub Issues
+Dashboard is available at **http://localhost:8000** after `docker compose up dashboard`.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GITHUB_TOKEN` | Yes | GitHub PAT with `repo` scope ([create one](https://github.com/settings/tokens/new?scopes=repo)) |
+| `GITHUB_REPO` | No | Target repo (default: `ishi-gupta/superset`) |
+| `DEVIN_API_KEY` | Yes* | Devin Service User API key ([create one](https://app.devin.ai/settings)) |
+| `DEVIN_ORG_ID` | Yes* | Devin organization ID |
+| `SCAN_SEVERITY_THRESHOLD` | No | Minimum severity to report (default: `LOW`) |
+| `MAX_ISSUES_PER_RUN` | No | Max issues created per scan (default: `50`) |
+
+*Required only for the orchestrator (Devin remediation).
+
+## Quick Start (without Docker)
+
 ```bash
+# Install dependencies
+pip install -e ".[scanners]"
+
+# Run the scanner
+python -m automation.scanner --target ishi-gupta/superset --output data/scan_results.json
+
+# Create GitHub issues
 export GITHUB_TOKEN=ghp_...
-python -m automation.issue_creator --input scan_results.json --repo ishi-gupta/superset
-```
+python -m automation.issue_creator --input data/scan_results.json --repo ishi-gupta/superset
 
-### Launch the Dashboard
-```bash
-cd dashboard && npm install && npm run build && cd ..
-python -m uvicorn automation.dashboard:app --host 0.0.0.0 --port 8000
-```
+# Launch the dashboard
+uvicorn automation.dashboard:app --host 0.0.0.0 --port 8000
 
-### Trigger Remediation
-```bash
-export DEVIN_API_KEY=...
+# Trigger Devin remediation
+export DEVIN_API_KEY=cog_...
+export DEVIN_ORG_ID=org-...
 python -m automation.orchestrator --repo ishi-gupta/superset --one-shot
 ```
+
+## GitHub Actions (CI/CD)
+
+The system includes GitHub Actions workflows for automated operation:
+
+- **`scan.yml`** — Runs daily at midnight UTC (or on push/PR). Scans the target repo and creates GitHub issues.
+- **`remediate.yml`** — Manually triggered. Runs the orchestrator to create Devin sessions for open security issues.
+- **`test.yml`** — Runs unit tests on every push/PR.
+
+## Scanner Tools
+
+| Tool | Type | What It Detects |
+|------|------|-----------------|
+| [Bandit](https://bandit.readthedocs.io/) | SAST | Python security anti-patterns (eval, exec, SQL injection, etc.) |
+| [Semgrep](https://semgrep.dev/) | SAST | Multi-language vulnerability patterns using `--config auto` |
+| [pip-audit](https://pypi.org/project/pip-audit/) | SCA | Known CVEs in Python dependencies |
+| [Gitleaks](https://gitleaks.io/) | Secrets | Hardcoded API keys, passwords, tokens |
 
 ## Documentation
 

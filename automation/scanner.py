@@ -128,11 +128,7 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
     """Run Semgrep (multi-language SAST) and return normalized findings."""
     findings = []
     try:
-        # Build config args: use curated rulesets instead of "auto" to reduce noise
-        config_args = ["--config", "p/security-audit", "--config", "p/secrets"]
-        custom_rules = Path(__file__).parent / "rules"
-        if custom_rules.is_dir():
-            config_args.extend(["--config", str(custom_rules)])
+        config_args = ["--config", "auto"]
 
         # Copy .semgrepignore to target repo so semgrep picks it up.
         # Save any existing file so we can restore it afterwards.
