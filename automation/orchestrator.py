@@ -123,9 +123,7 @@ def comment_on_issue(repo: str, issue_number: int, body: str, token: str) -> Non
 
 
 def create_devin_session(
-    prompt: str,
-    api_key: str,
-    org_id: str,
+    prompt: str, api_key: str, org_id: Optional[str] = None,
     playbook_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
@@ -138,7 +136,14 @@ def create_devin_session(
     Playbook so the agent receives the full remediation procedure.  The
     structured-output JSON schema is always sent so Devin returns
     machine-readable results (issue_number, status, pr_url, etc.).
+
+    v3 endpoint: POST /v3/organizations/{org_id}/sessions
     """
+    org_id = org_id or DEVIN_ORG_ID
+    if not org_id:
+        logger.error("DEVIN_ORG_ID is required for v3 API.")
+        return None
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -170,15 +175,27 @@ def create_devin_session(
 
 
 def get_session_status(
-    session_id: str, api_key: str, org_id: str
+    session_id: str, api_key: str, org_id: Optional[str] = None
 ) -> Optional[dict]:
-    """Check the status of a Devin session via the v3 API."""
+    """Check the status of a Devin session via the v3 API.
+
+    v3 endpoint: GET /v3/organizations/{org_id}/sessions/{devin_id}
+    The devin_id must be prefixed with 'devin-'.
+    """
+    org_id = org_id or DEVIN_ORG_ID
+    if not org_id:
+        logger.error("DEVIN_ORG_ID is required for v3 API.")
+        return None
+
+    # v3 API expects session IDs prefixed with 'devin-'
+    devin_id = session_id if session_id.startswith("devin-") else f"devin-{session_id}"
+
     headers = {
         "Authorization": f"Bearer {api_key}",
     }
 
     resp = requests.get(
-        f"{DEVIN_API_BASE}/organizations/{org_id}/sessions/{session_id}",
+        f"{DEVIN_API_BASE}/organizations/{org_id}/sessions/{devin_id}",
         headers=headers,
     )
 
@@ -291,11 +308,11 @@ def poll_active_sessions(
             # Check structured output for PR URL and fix status
             structured_output = status_data.get("structured_output", {}) or {}
             pr_url = structured_output.get("pr_url", "")
-            # v3 returns pull_requests as a list
+            # v3 API returns pull_requests as a list
             if not pr_url:
-                prs = status_data.get("pull_requests", []) or []
-                if prs:
-                    pr_url = prs[0].get("pr_url", "")
+                pull_requests = status_data.get("pull_requests") or []
+                if pull_requests:
+                    pr_url = pull_requests[0].get("pr_url", "")
             fix_status = structured_output.get("status", "needs_review")
 
             session_info["status"] = fix_status

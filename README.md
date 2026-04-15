@@ -1,140 +1,111 @@
 # Vulnerability Remediation System
 
-An **event-driven vulnerability remediation system** that scans code for security bugs, auto-creates GitHub Issues, triggers AI (Devin) to fix them, and tracks everything on a live dashboard. It also has an AI-powered red team that generates new adversarial test code to continuously stress-test the scanner.
+Event-driven vulnerability remediation system with AI-assisted automation using Devin.
 
----
+## What This Does
 
-## How It Works (The Big Picture)
+1. **Scans** `ishi-gupta/superset` for security vulnerabilities (SAST, SCA, secrets)
+2. **Creates GitHub Issues** for each finding with CVE/CWE IDs and severity labels
+3. **Triggers Devin AI sessions** to automatically fix the vulnerabilities
+4. **Tracks everything** on a live observability dashboard
+
+## Architecture
 
 ```
- You push code to ishi-gupta/superset
-              │
-              ▼
- ┌──────────────────────────┐
- │   VULNERABILITY SCANNER  │  ← Runs automatically on push, PR, daily cron, or on-demand
- │   Bandit + Semgrep +     │
- │   pip-audit + Gitleaks   │
- └────────────┬─────────────┘
-              │
-       scan_results.json
-              │
-              ▼
- ┌──────────────────────────┐
- │     ISSUE CREATOR        │  ← Creates GitHub Issues with CVE/CWE IDs, severity labels,
- │  Deduplicates, labels,   │    code snippets, and remediation advice
- │  links to NVD/MITRE      │
- └────────────┬─────────────┘
-              │
-    GitHub Issues in superset
-              │
-              ▼
- ┌──────────────────────────┐
- │  REMEDIATION ORCHESTRATOR│  ← Watches for new security issues
- │  Triggers Devin sessions │    Spins up Devin AI to write fix PRs
- │  Tracks progress         │    Comments on issues with session links + PR links
- └────────────┬─────────────┘
-              │
-              ▼
- ┌──────────────────────────┐
- │   OBSERVABILITY DASHBOARD│  ← Live metrics: findings by severity, remediation
- │   FastAPI + React        │    success rate, scan history, issue tracking
- └──────────────────────────┘
-
-              +
-
- ┌──────────────────────────┐
- │  ADVERSARIAL RED TEAM    │  ← On-demand: Devin generates NEW sneaky vulnerable code,
- │  AI-generated test code  │    scanner runs against it, detection rate measured
- │  with answer keys        │    Proves the scanner actually catches things
- └──────────────────────────┘
+┌──────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌──────────────┐
+│   Scanner    │────▶│  Issue Creator   │────▶│  Orchestrator    │────▶│  Dashboard   │
+│              │     │                  │     │                  │     │              │
+│ • Bandit     │     │ • GitHub Issues  │     │ • Devin v3 API   │     │ • Metrics    │
+│ • Semgrep    │     │ • Severity labels│     │ • Session mgmt   │     │ • Issues     │
+│ • pip-audit  │     │ • Deduplication  │     │ • Status polling │     │ • Sessions   │
+│ • Gitleaks   │     │ • CWE/CVE refs   │     │ • Auto-labeling  │     │ • Charts     │
+└──────────────┘     └──────────────────┘     └──────────────────┘     └──────────────┘
 ```
 
----
+**Event-driven flow:** Scan results trigger issue creation → new issues trigger Devin sessions → session status updates the dashboard. Can run via CLI, Docker, or GitHub Actions (scheduled daily or on push).
 
 ## The 3 Repos
 
-| Repo | Role | What happens here |
-|------|------|-------------------|
-| [`ishi-gupta/superset`](https://github.com/ishi-gupta/superset) | **Target** | Gets scanned. Security issues and fix PRs land here. |
-| [`ishi-gupta/vuln-remediation-system`](https://github.com/ishi-gupta/vuln-remediation-system) | **Brain** (this repo) | All automation: scanner, issue creator, orchestrator, dashboard, adversarial generator |
-| [`ishi-gupta/vuln-test-suite`](https://github.com/ishi-gupta/vuln-test-suite) | **Red Team** | Intentionally vulnerable code used to test the scanner's detection rate |
+| Repo | Role |
+|------|------|
+| [ishi-gupta/superset](https://github.com/ishi-gupta/superset) | **Target** — gets scanned, issues + fix PRs land here |
+| **ishi-gupta/vuln-remediation-system** (this repo) | **Brain** — scanner, issue creator, orchestrator, dashboard |
+| [ishi-gupta/vuln-test-suite](https://github.com/ishi-gupta/vuln-test-suite) | **Red Team** — adversarial test suite that validates scanner detection |
 
----
-
-## Quick Start
-
-### 1. Run the Scanner
+## Quick Start (Docker)
 
 ```bash
-# Clone this repo
+# 1. Clone the repo
 git clone https://github.com/ishi-gupta/vuln-remediation-system.git
 cd vuln-remediation-system
 
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your GITHUB_TOKEN, DEVIN_API_KEY, and DEVIN_ORG_ID
+
+# 3. Start the dashboard
+docker compose up dashboard
+
+# 4. Run the full pipeline
+docker compose run scanner              # Scan for vulnerabilities
+docker compose run issue-creator         # Create GitHub issues
+docker compose run orchestrator          # Trigger Devin remediation
+```
+
+Dashboard is available at **http://localhost:8000** after `docker compose up dashboard`.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GITHUB_TOKEN` | Yes | GitHub PAT with `repo` scope ([create one](https://github.com/settings/tokens/new?scopes=repo)) |
+| `GITHUB_REPO` | No | Target repo (default: `ishi-gupta/superset`) |
+| `DEVIN_API_KEY` | Yes* | Devin Service User API key ([create one](https://app.devin.ai/settings)) |
+| `DEVIN_ORG_ID` | Yes* | Devin organization ID |
+| `MAX_ISSUES_PER_RUN` | No | Max issues created per scan (default: `50`) |
+
+*Required only for the orchestrator (Devin remediation).
+
+## Quick Start (without Docker)
+
+```bash
 # Install dependencies
 pip install -e ".[scanners]"
 
-# Scan a repo (local path or GitHub owner/repo)
-python -m automation.scanner --target ishi-gupta/superset --output scan_results.json
+# Run the scanner
+python -m automation.scanner --target ishi-gupta/superset --output data/scan_results.json
 
-# Scan with specific scanners only
-python -m automation.scanner --target ishi-gupta/superset --scanners bandit semgrep
-```
+# Create GitHub issues
+export GITHUB_TOKEN=ghp_...
+python -m automation.issue_creator --input data/scan_results.json --repo ishi-gupta/superset
 
-### 2. Create GitHub Issues from Findings
+# Launch the dashboard
+uvicorn automation.dashboard:app --host 0.0.0.0 --port 8000
 
-```bash
-export GITHUB_TOKEN="your-github-pat"
-python -m automation.issue_creator --input scan_results.json --repo ishi-gupta/superset
-```
-
-### 3. Start the Dashboard
-
-```bash
-export GITHUB_TOKEN="your-github-pat"
-
-# Backend (FastAPI)
-python -m automation.dashboard
-# → http://localhost:8000
-
-# Frontend (React)
-cd dashboard && npm install && npm run dev
-# → http://localhost:5173
-```
-
-### 4. Run the Orchestrator (AI Remediation)
-
-```bash
-export GITHUB_TOKEN="your-github-pat"
-export DEVIN_API_KEY="your-devin-api-key"
-
-# One-shot: process all open security issues, then exit
+# Trigger Devin remediation
+export DEVIN_API_KEY=cog_...
+export DEVIN_ORG_ID=org-...
 python -m automation.orchestrator --repo ishi-gupta/superset --one-shot
-
-# Continuous: poll every 60 seconds
-python -m automation.orchestrator --repo ishi-gupta/superset --poll-interval 60
 ```
 
-### 5. Run Adversarial Testing (AI Red Team)
+## GitHub Actions (CI/CD)
 
-```bash
-export DEVIN_API_KEY="your-devin-api-key"
+The system includes GitHub Actions workflows for automated operation:
 
-# Generate new adversarial code via Devin (on-demand)
-python -m automation.adversarial_generator --mode generate --num-files 3
+- **`scan.yml`** — Runs daily at midnight UTC (or on push/PR). Scans the target repo and creates GitHub issues.
+- **`remediate.yml`** — Manually triggered. Runs the orchestrator to create Devin sessions for open security issues.
+- **`test.yml`** — Runs unit tests on every push/PR.
 
-# Evaluate scanner against the test suite
-python -m automation.adversarial_generator --mode evaluate \
-  --test-suite ../vuln-test-suite \
-  --scanner-repo .
+## Scanner Tools
 
-# Full cycle: generate → wait for Devin → evaluate
-python -m automation.adversarial_generator --mode full \
-  --num-files 3 \
-  --test-suite ../vuln-test-suite \
-  --scanner-repo .
-```
+| Tool | Type | What It Detects |
+|------|------|-----------------|
+| [Bandit](https://bandit.readthedocs.io/) | SAST | Python security anti-patterns (eval, exec, SQL injection, etc.) |
+| [Semgrep](https://semgrep.dev/) | SAST | Multi-language vulnerability patterns using `--config auto` |
+| [pip-audit](https://pypi.org/project/pip-audit/) | SCA | Known CVEs in Python dependencies |
+| [Gitleaks](https://gitleaks.io/) | Secrets | Hardcoded API keys, passwords, tokens |
 
----
+## Documentation
 
 ## Components in Detail
 
@@ -242,7 +213,6 @@ Both are already configured in this repo's settings.
 | `GITHUB_TOKEN` | Issue Creator, Orchestrator, Dashboard | — | GitHub PAT with `repo` scope |
 | `GITHUB_REPO` | All | `ishi-gupta/superset` | Target repo to scan |
 | `DEVIN_API_KEY` | Orchestrator, Adversarial Generator | — | Devin API key |
-| `SCAN_SEVERITY_THRESHOLD` | Scanner | `LOW` | Minimum severity to report |
 | `MAX_ISSUES_PER_RUN` | Issue Creator | `50` | Max GitHub Issues created per scan |
 | `DASHBOARD_HOST` | Dashboard | `0.0.0.0` | Dashboard bind address |
 | `DASHBOARD_PORT` | Dashboard | `8000` | Dashboard port |
