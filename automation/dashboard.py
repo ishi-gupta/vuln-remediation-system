@@ -8,7 +8,7 @@ plus the built React frontend from dashboard/dist/.
 import json
 import logging
 import threading
-import traceback
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -61,7 +61,7 @@ _jobs_lock = threading.Lock()
 
 def _create_job(job_type: str) -> str:
     """Create a new tracked job and return its ID."""
-    job_id = f"{job_type}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    job_id = f"{job_type}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     with _jobs_lock:
         _jobs[job_id] = {
             "id": job_id,
@@ -102,6 +102,12 @@ def _finish_job(job_id: str, status: str = "completed", result: Any = None, erro
             _jobs[job_id]["result"] = result
             _jobs[job_id]["error"] = error
 
+
+# ---------------------------------------------------------------------------
+# State file lock (prevents concurrent read-modify-write corruption)
+# ---------------------------------------------------------------------------
+
+_state_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -319,17 +325,18 @@ def _run_scan_background(job_id: str, repo: str) -> None:
         _log_job(job_id, f"Scan complete: {scan_run.total_findings} findings ({scan_run.duration_seconds:.1f}s)")
 
         # Persist to state.json
-        state = _load_state()
-        state.scan_runs.append(scan_run.to_dict())
-        existing_ids = {f.get("finding_id") for f in state.findings}
-        new_count = 0
-        for finding in findings:
-            fd = finding.to_dict()
-            if fd["finding_id"] not in existing_ids:
-                state.findings.append(fd)
-                existing_ids.add(fd["finding_id"])
-                new_count += 1
-        state.save(str(STATE_FILE))
+        with _state_lock:
+            state = _load_state()
+            state.scan_runs.append(scan_run.to_dict())
+            existing_ids = {f.get("finding_id") for f in state.findings}
+            new_count = 0
+            for finding in findings:
+                fd = finding.to_dict()
+                if fd["finding_id"] not in existing_ids:
+                    state.findings.append(fd)
+                    existing_ids.add(fd["finding_id"])
+                    new_count += 1
+            state.save(str(STATE_FILE))
         _log_job(job_id, f"Persisted {new_count} new findings to state.json")
 
         # Create GitHub issues
@@ -341,21 +348,22 @@ def _run_scan_background(job_id: str, repo: str) -> None:
 
             # Persist remediation records
             if issues_created:
-                state = _load_state()
-                existing_issue_numbers = {
-                    r.get("issue_number") for r in state.remediation_records
-                }
-                for issue in issues_created:
-                    if issue["issue_number"] not in existing_issue_numbers:
-                        record = RemediationRecord(
-                            finding_id=issue["finding_id"],
-                            issue_number=issue["issue_number"],
-                            issue_url=issue["issue_url"],
-                            status=RemediationStatus.PENDING,
-                        )
-                        state.remediation_records.append(record.to_dict())
-                        existing_issue_numbers.add(issue["issue_number"])
-                state.save(str(STATE_FILE))
+                with _state_lock:
+                    state = _load_state()
+                    existing_issue_numbers = {
+                        r.get("issue_number") for r in state.remediation_records
+                    }
+                    for issue in issues_created:
+                        if issue["issue_number"] not in existing_issue_numbers:
+                            record = RemediationRecord(
+                                finding_id=issue["finding_id"],
+                                issue_number=issue["issue_number"],
+                                issue_url=issue["issue_url"],
+                                status=RemediationStatus.PENDING,
+                            )
+                            state.remediation_records.append(record.to_dict())
+                            existing_issue_numbers.add(issue["issue_number"])
+                    state.save(str(STATE_FILE))
         else:
             _log_job(job_id, "Skipping issue creation (no GITHUB_TOKEN or no findings)")
 
@@ -425,24 +433,26 @@ def _run_orchestrator_background(job_id: str, repo: str) -> None:
             return
 
         sessions_created = 0
-        state = _load_state()
 
-        for issue in actionable[:5]:  # Cap at 5 concurrent
-            _log_job(job_id, f"Triggering Devin session for issue #{issue['number']}: {issue['title'][:60]}")
-            record = trigger_remediation(
-                issue=issue,
-                repo=repo,
-                token=GITHUB_TOKEN,
-                api_key=DEVIN_API_KEY,
-            )
-            if record:
-                state.active_sessions.append(record.to_dict())
-                sessions_created += 1
-                _log_job(job_id, f"  → Session created: {record.devin_session_id}")
-            else:
-                _log_job(job_id, f"  → Failed to create session for issue #{issue['number']}")
+        with _state_lock:
+            state = _load_state()
 
-        state.save(str(STATE_FILE))
+            for issue in actionable[:5]:  # Cap at 5 concurrent
+                _log_job(job_id, f"Triggering Devin session for issue #{issue['number']}: {issue['title'][:60]}")
+                record = trigger_remediation(
+                    issue=issue,
+                    repo=repo,
+                    token=GITHUB_TOKEN,
+                    api_key=DEVIN_API_KEY,
+                )
+                if record:
+                    state.active_sessions.append(record.to_dict())
+                    sessions_created += 1
+                    _log_job(job_id, f"  → Session created: {record.devin_session_id}")
+                else:
+                    _log_job(job_id, f"  → Failed to create session for issue #{issue['number']}")
+
+            state.save(str(STATE_FILE))
         _finish_job(job_id, status="completed", result={"sessions_created": sessions_created})
 
     except Exception as e:
