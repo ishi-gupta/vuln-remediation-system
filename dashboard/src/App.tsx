@@ -27,6 +27,10 @@ import {
   FlaskConical,
   LayoutDashboard,
   ListChecks,
+  Play,
+  Zap,
+  Loader2,
+  Terminal,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +101,17 @@ interface AdversarialResults {
   categories?: AdversarialCategory[];
 }
 
+interface Job {
+  id: string;
+  type: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  result: Record<string, any> | null;
+  error: string | null;
+  logs: { time: string; message: string }[];
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -119,6 +134,25 @@ const REMEDIATION_COLORS: Record<string, string> = {
 const REFRESH_INTERVAL = 15_000;
 
 type Tab = "overview" | "issues" | "adversarial";
+
+// ---------------------------------------------------------------------------
+// Action button helper
+// ---------------------------------------------------------------------------
+
+async function triggerAction(endpoint: string): Promise<{ job_id: string } | null> {
+  try {
+    const res = await fetch(endpoint, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || `Request failed: ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    alert(`Network error: ${e}`);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,22 +210,26 @@ export default function App() {
     message?: string;
     results: AdversarialResults | Record<string, never>;
   } | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [mRes, iRes, aRes] = await Promise.all([
+      const [mRes, iRes, aRes, jRes] = await Promise.all([
         fetch("/api/metrics"),
         fetch("/api/issues"),
         fetch("/api/adversarial"),
+        fetch("/api/jobs"),
       ]);
       const mData = await mRes.json();
       const iData = await iRes.json();
       const aData = await aRes.json();
+      const jData = await jRes.json();
       setMetrics(mData);
       setIssues(iData.issues ?? []);
       setAdversarial(aData);
+      setJobs(jData.jobs ?? []);
       setLastUpdated(new Date());
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
@@ -205,6 +243,21 @@ export default function App() {
     const id = setInterval(fetchData, REFRESH_INTERVAL);
     return () => clearInterval(id);
   }, [fetchData]);
+
+  const handleScan = async () => {
+    await triggerAction("/api/scan");
+    setTimeout(fetchData, 1000);
+  };
+
+  const handleAdversarial = async () => {
+    await triggerAction("/api/adversarial/generate");
+    setTimeout(fetchData, 1000);
+  };
+
+  const handleOrchestrate = async () => {
+    await triggerAction("/api/orchestrate");
+    setTimeout(fetchData, 1000);
+  };
 
   // -- Tab buttons ----------------------------------------------------------
 
@@ -244,7 +297,32 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <ActionButton
+              label="Run Scanner"
+              icon={<Play size={14} />}
+              onClick={handleScan}
+              color="emerald"
+              jobs={jobs}
+              jobType="scan"
+            />
+            <ActionButton
+              label="Trigger Remediation"
+              icon={<Zap size={14} />}
+              onClick={handleOrchestrate}
+              color="blue"
+              jobs={jobs}
+              jobType="orchestrate"
+            />
+            <ActionButton
+              label="Test Buggy PRs"
+              icon={<Bug size={14} />}
+              onClick={handleAdversarial}
+              color="orange"
+              jobs={jobs}
+              jobType="adversarial"
+            />
+            <div className="w-px h-6 bg-gray-700 mx-1" />
             {lastUpdated && (
               <span className="text-xs text-gray-500">
                 Updated {lastUpdated.toLocaleTimeString()}
@@ -276,6 +354,9 @@ export default function App() {
           </div>
         ) : (
           <>
+            {/* Active Jobs Panel */}
+            {jobs.length > 0 && <JobsPanel jobs={jobs} />}
+
             {tab === "overview" && metrics && <OverviewTab metrics={metrics} />}
             {tab === "issues" && <IssuesTab issues={issues} />}
             {tab === "adversarial" && (
@@ -777,6 +858,171 @@ function EmptyState({ message }: { message: string }) {
     <div className="flex flex-col items-center justify-center py-12 text-gray-500">
       <Activity size={32} className="mb-3 text-gray-600" />
       <p className="text-sm">{message}</p>
+    </div>
+  );
+}
+
+// ===========================================================================
+// ACTION BUTTON
+// ===========================================================================
+
+function ActionButton({
+  label,
+  icon,
+  onClick,
+  color,
+  jobs,
+  jobType,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  color: "emerald" | "blue" | "orange";
+  jobs: Job[];
+  jobType: string;
+}) {
+  const running = jobs.some((j) => j.type === jobType && j.status === "running");
+
+  const colorClasses: Record<string, string> = {
+    emerald: "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20",
+    blue: "bg-blue-600 hover:bg-blue-500 shadow-blue-500/20",
+    orange: "bg-orange-600 hover:bg-orange-500 shadow-orange-500/20",
+  };
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={running}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-all shadow-lg ${
+        running
+          ? "bg-gray-700 cursor-not-allowed opacity-60"
+          : colorClasses[color]
+      }`}
+    >
+      {running ? <Loader2 size={14} className="animate-spin" /> : icon}
+      {running ? `${label}...` : label}
+    </button>
+  );
+}
+
+// ===========================================================================
+// JOBS PANEL
+// ===========================================================================
+
+function JobsPanel({ jobs }: { jobs: Job[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const sortedJobs = [...jobs].sort(
+    (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+  );
+
+  const jobTypeLabel: Record<string, string> = {
+    scan: "Scanner",
+    orchestrate: "Remediation",
+    adversarial: "Adversarial",
+  };
+
+  const jobStatusBadge = (status: string) => {
+    const styles: Record<string, string> = {
+      running: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+      completed: "bg-green-500/20 text-green-400 border-green-500/30",
+      failed: "bg-red-500/20 text-red-400 border-red-500/30",
+    };
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold border ${
+          styles[status] ?? "bg-gray-700 text-gray-300 border-gray-600"
+        }`}
+      >
+        {status === "running" && <Loader2 size={10} className="animate-spin" />}
+        {status === "completed" && <CheckCircle size={10} />}
+        {status === "failed" && <XCircle size={10} />}
+        {status}
+      </span>
+    );
+  };
+
+  return (
+    <div className="mb-6">
+      <Card title="Background Jobs">
+        <div className="space-y-2">
+          {sortedJobs.map((job) => (
+            <div
+              key={job.id}
+              className="border border-gray-800 rounded-lg overflow-hidden"
+            >
+              <button
+                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-800/50 transition-colors text-left"
+                onClick={() => setExpanded(expanded === job.id ? null : job.id)}
+              >
+                <div className="flex items-center gap-3">
+                  <Terminal size={14} className="text-gray-500" />
+                  <span className="text-sm font-medium">
+                    {jobTypeLabel[job.type] ?? job.type}
+                  </span>
+                  {jobStatusBadge(job.status)}
+                </div>
+                <span className="text-xs text-gray-500">
+                  {new Date(job.started_at).toLocaleTimeString()}
+                </span>
+              </button>
+
+              {expanded === job.id && (
+                <div className="border-t border-gray-800 bg-gray-950 px-4 py-3 space-y-2">
+                  {/* Result summary */}
+                  {job.result && (
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(job.result).map(([k, v]) => (
+                        <span
+                          key={k}
+                          className="text-xs bg-gray-800 px-2 py-1 rounded text-gray-300"
+                        >
+                          <span className="text-gray-500">
+                            {k.replace(/_/g, " ")}:
+                          </span>{" "}
+                          {typeof v === "string" && v.startsWith("http") ? (
+                            <a
+                              href={v}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-indigo-400 hover:underline"
+                            >
+                              link
+                            </a>
+                          ) : (
+                            String(v)
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {job.error && (
+                    <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                      {job.error}
+                    </div>
+                  )}
+
+                  {/* Logs */}
+                  {job.logs.length > 0 && (
+                    <div className="bg-gray-900 rounded border border-gray-800 p-3 max-h-48 overflow-y-auto font-mono text-xs space-y-0.5">
+                      {job.logs.map((log, i) => (
+                        <div key={i} className="flex gap-2">
+                          <span className="text-gray-600 shrink-0">
+                            {new Date(log.time).toLocaleTimeString()}
+                          </span>
+                          <span className="text-gray-300">{log.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
     </div>
   );
 }
