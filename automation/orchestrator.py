@@ -17,6 +17,7 @@ from automation.config import (
     GITHUB_REPO,
     DEVIN_API_KEY,
     DEVIN_API_BASE,
+    DEVIN_PLAYBOOK_ID,
     STATE_FILE,
     STRUCTURED_OUTPUT_SCHEMA,
 )
@@ -121,12 +122,18 @@ def comment_on_issue(repo: str, issue_number: int, body: str, token: str) -> Non
         )
 
 
-def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
+def create_devin_session(
+    prompt: str,
+    api_key: str,
+    playbook_id: Optional[str] = None,
+) -> Optional[dict]:
     """
     Create a new Devin session via the API.
 
-    Sends the structured-output JSON schema so Devin returns machine-readable
-    results (issue_number, status, pr_url, etc.).
+    When a ``playbook_id`` is provided the session is linked to the Devin
+    Playbook so the agent receives the full remediation procedure.  The
+    structured-output JSON schema is always sent so Devin returns
+    machine-readable results (issue_number, status, pr_url, etc.).
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -137,6 +144,9 @@ def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
         "prompt": prompt,
         "structured_output_schema": STRUCTURED_OUTPUT_SCHEMA,
     }
+
+    if playbook_id:
+        payload["playbook_id"] = playbook_id
 
     resp = requests.post(
         f"{DEVIN_API_BASE}/sessions",
@@ -205,8 +215,8 @@ def trigger_remediation(
         issue_body=issue_body[:3000],  # Truncate to avoid exceeding limits
     )
 
-    # 4. Create Devin session
-    session = create_devin_session(prompt, api_key)
+    # 4. Create Devin session with the attached playbook
+    session = create_devin_session(prompt, api_key, playbook_id=DEVIN_PLAYBOOK_ID)
     if not session:
         add_label(repo, issue_number, "remediation-failed", token)
         comment_on_issue(
