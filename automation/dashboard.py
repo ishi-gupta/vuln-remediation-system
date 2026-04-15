@@ -566,32 +566,43 @@ def _run_adversarial_background(job_id: str, repo: str) -> None:
     """Background thread: generate buggy PRs on the target repo via Devin."""
     try:
         from automation.adversarial_generator import (
-            create_adversarial_session,
-            generate_round_id,
-            SCANNER_CAPABILITIES,
+            VULNERABILITY_CATEGORIES,
+            plan_bugs,
+            spawn_baby_devins,
         )
 
-        round_id = generate_round_id()
-        _log_job(job_id, f"Starting adversarial generation (round {round_id})")
-        _log_job(job_id, f"Target repo: {repo}")
-        _log_job(job_id, f"Categories: {', '.join(SCANNER_CAPABILITIES.keys())}")
+        categories = list(VULNERABILITY_CATEGORIES.keys())
+        _log_job(job_id, f"Starting adversarial generation for {repo}")
+        _log_job(job_id, f"Categories: {', '.join(categories)}")
 
-        session_record = create_adversarial_session(
-            round_id=round_id,
-            num_files=3,
-            api_key=DEVIN_API_KEY,
-        )
+        # Plan 3 bugs across all categories
+        bug_specs = plan_bugs(categories=categories, count=3, target_repo=repo)
+        _log_job(job_id, f"Planned {len(bug_specs)} adversarial bugs")
 
-        if session_record:
-            _log_job(job_id, f"Devin session created: {session_record.get('session_url', 'N/A')}")
+        for spec in bug_specs:
+            _log_job(job_id, f"  → {spec['bug_id']}: {spec['category']} / {spec['pattern_name']}")
+
+        # Spawn Baby Devin sessions to plant the bugs
+        sessions = spawn_baby_devins(bug_specs, api_key=DEVIN_API_KEY, max_concurrent=5)
+
+        spawned = [s for s in sessions if s["status"] == "spawned"]
+        failed = [s for s in sessions if s["status"] == "failed_to_spawn"]
+
+        for s in spawned:
+            _log_job(job_id, f"Session spawned: {s['bug_id']} → {s.get('session_url', 'N/A')}")
+        for s in failed:
+            _log_job(job_id, f"Session failed: {s['bug_id']}")
+
+        if spawned:
             _finish_job(job_id, status="completed", result={
-                "round_id": round_id,
-                "session_id": session_record.get("session_id"),
-                "session_url": session_record.get("session_url"),
-                "categories": list(SCANNER_CAPABILITIES.keys()),
+                "bugs_planned": len(bug_specs),
+                "sessions_spawned": len(spawned),
+                "sessions_failed": len(failed),
+                "sessions": spawned,
+                "categories": categories,
             })
         else:
-            _finish_job(job_id, status="failed", error="Failed to create Devin session. Check DEVIN_API_KEY.")
+            _finish_job(job_id, status="failed", error="No Devin sessions could be created. Check DEVIN_API_KEY.")
 
     except Exception as e:
         logger.exception("Adversarial job %s failed", job_id)
