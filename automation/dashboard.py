@@ -5,6 +5,7 @@ Serves API endpoints for metrics, findings, issues, sessions, and adversarial re
 plus the built React frontend from dashboard/dist/.
 """
 
+import copy
 import json
 import logging
 import threading
@@ -311,7 +312,7 @@ async def adversarial() -> dict[str, Any]:
 async def get_jobs() -> dict[str, Any]:
     """Return all tracked background jobs."""
     with _jobs_lock:
-        return {"jobs": list(_jobs.values())}
+        return {"jobs": copy.deepcopy(list(_jobs.values()))}
 
 
 def _run_scan_background(job_id: str, repo: str) -> None:
