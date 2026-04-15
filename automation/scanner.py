@@ -35,7 +35,7 @@ def run_bandit(repo_path: str) -> list[VulnerabilityFinding]:
     findings = []
     try:
         result = subprocess.run(
-            ["bandit", "-r", repo_path, "-f", "json", "-ll", "--quiet"],
+            ["bandit", "-r", repo_path, "-f", "json", "--quiet"],
             capture_output=True,
             text=True,
             timeout=300,
@@ -161,7 +161,8 @@ def run_pip_audit(repo_path: str) -> list[VulnerabilityFinding]:
     if not targets:
         return findings
 
-    for target in targets[:3]:  # Limit to avoid excessive scanning
+    print(f"[pip-audit] Found {len(targets)} requirement/config files to scan")
+    for target in targets:
         try:
             cmd = ["pip-audit", "-f", "json", "--desc"]
             if target.name.startswith("requirements"):

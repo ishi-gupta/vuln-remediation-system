@@ -251,7 +251,6 @@ VulnerabilityFinding:
 | `GITHUB_TOKEN` | Issue Creator, Orchestrator, Dashboard | GitHub PAT with `repo` scope |
 | `GITHUB_REPO` | All | Target repo, default: `ishi-gupta/superset` |
 | `DEVIN_API_KEY` | Orchestrator | Devin API key |
-| `SCAN_SEVERITY_THRESHOLD` | Scanner | Min severity to report, default: `LOW` |
 | `MAX_ISSUES_PER_RUN` | Issue Creator | Max issues per scan, default: `50` |
 | `DASHBOARD_HOST` | Dashboard | Default: `0.0.0.0` |
 | `DASHBOARD_PORT` | Dashboard | Default: `8000` |

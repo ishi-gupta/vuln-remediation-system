@@ -242,7 +242,6 @@ Both are already configured in this repo's settings.
 | `GITHUB_TOKEN` | Issue Creator, Orchestrator, Dashboard | — | GitHub PAT with `repo` scope |
 | `GITHUB_REPO` | All | `ishi-gupta/superset` | Target repo to scan |
 | `DEVIN_API_KEY` | Orchestrator, Adversarial Generator | — | Devin API key |
-| `SCAN_SEVERITY_THRESHOLD` | Scanner | `LOW` | Minimum severity to report |
 | `MAX_ISSUES_PER_RUN` | Issue Creator | `50` | Max GitHub Issues created per scan |
 | `DASHBOARD_HOST` | Dashboard | `0.0.0.0` | Dashboard bind address |
 | `DASHBOARD_PORT` | Dashboard | `8000` | Dashboard port |

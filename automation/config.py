@@ -19,7 +19,6 @@ DEVIN_PLAYBOOK_ID = os.environ.get(
 )
 
 # Scanning Configuration
-SCAN_SEVERITY_THRESHOLD = os.environ.get("SCAN_SEVERITY_THRESHOLD", "LOW")
 MAX_ISSUES_PER_RUN = int(os.environ.get("MAX_ISSUES_PER_RUN", "50"))
 
 # Dashboard Configuration
