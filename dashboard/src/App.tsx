@@ -23,10 +23,12 @@ import {
   Clock,
   ExternalLink,
   RefreshCw,
-  Bug,
-  FlaskConical,
   LayoutDashboard,
   ListChecks,
+  Play,
+  Zap,
+  Loader2,
+  Terminal,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +49,6 @@ interface Metrics {
   remediation_status: Record<string, number>;
   scan_history: ScanHistoryEntry[];
   recent_remediations: RemediationEntry[];
-  adversarial_results: AdversarialResults | Record<string, never>;
 }
 
 interface ScanHistoryEntry {
@@ -84,17 +85,15 @@ interface Issue {
   remediation_failed: boolean;
 }
 
-interface AdversarialCategory {
-  name: string;
-  total: number;
-  detected: number;
-  missed: number;
-  rate: number;
-}
-
-interface AdversarialResults {
-  overall_detection_rate?: number;
-  categories?: AdversarialCategory[];
+interface Job {
+  id: string;
+  type: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  result: Record<string, any> | null;
+  error: string | null;
+  logs: { time: string; message: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +117,26 @@ const REMEDIATION_COLORS: Record<string, string> = {
 
 const REFRESH_INTERVAL = 15_000;
 
-type Tab = "overview" | "issues" | "adversarial";
+type Tab = "overview" | "issues";
+
+// ---------------------------------------------------------------------------
+// Action button helper
+// ---------------------------------------------------------------------------
+
+async function triggerAction(endpoint: string): Promise<{ job_id: string } | null> {
+  try {
+    const res = await fetch(endpoint, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || `Request failed: ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    alert(`Network error: ${e}`);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -172,26 +190,23 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
-  const [adversarial, setAdversarial] = useState<{
-    message?: string;
-    results: AdversarialResults | Record<string, never>;
-  } | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [mRes, iRes, aRes] = await Promise.all([
+      const [mRes, iRes, jRes] = await Promise.all([
         fetch("/api/metrics"),
         fetch("/api/issues"),
-        fetch("/api/adversarial"),
+        fetch("/api/jobs"),
       ]);
       const mData = await mRes.json();
       const iData = await iRes.json();
-      const aData = await aRes.json();
+      const jData = await jRes.json();
       setMetrics(mData);
       setIssues(iData.issues ?? []);
-      setAdversarial(aData);
+      setJobs(jData.jobs ?? []);
       setLastUpdated(new Date());
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
@@ -205,6 +220,16 @@ export default function App() {
     const id = setInterval(fetchData, REFRESH_INTERVAL);
     return () => clearInterval(id);
   }, [fetchData]);
+
+  const handleScan = async () => {
+    await triggerAction("/api/scan");
+    setTimeout(fetchData, 1000);
+  };
+
+  const handleOrchestrate = async () => {
+    await triggerAction("/api/orchestrate");
+    setTimeout(fetchData, 1000);
+  };
 
   // -- Tab buttons ----------------------------------------------------------
 
@@ -244,7 +269,25 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <ActionButton
+              label="Run Scanner"
+              icon={<Play size={14} />}
+              onClick={handleScan}
+              color="emerald"
+              jobs={jobs}
+              jobType="scan"
+            />
+            <ActionButton
+              label="Trigger Remediation"
+              icon={<Zap size={14} />}
+              onClick={handleOrchestrate}
+              color="blue"
+              jobs={jobs}
+              jobType="orchestrate"
+            />
+
+            <div className="w-px h-6 bg-gray-700 mx-1" />
             {lastUpdated && (
               <span className="text-xs text-gray-500">
                 Updated {lastUpdated.toLocaleTimeString()}
@@ -265,7 +308,7 @@ export default function App() {
       <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 flex gap-2">
         {tabButton("overview", "Overview", LayoutDashboard)}
         {tabButton("issues", "Issues", ListChecks)}
-        {tabButton("adversarial", "Adversarial Testing", FlaskConical)}
+
       </nav>
 
       {/* Content */}
@@ -276,11 +319,12 @@ export default function App() {
           </div>
         ) : (
           <>
+            {/* Active Jobs Panel */}
+            {jobs.length > 0 && <JobsPanel jobs={jobs} />}
+
             {tab === "overview" && metrics && <OverviewTab metrics={metrics} />}
             {tab === "issues" && <IssuesTab issues={issues} />}
-            {tab === "adversarial" && (
-              <AdversarialTab data={adversarial} />
-            )}
+
           </>
         )}
       </main>
@@ -315,7 +359,7 @@ function OverviewTab({ metrics }: { metrics: Metrics }) {
         <StatCard
           title="Total Findings"
           value={overview.total_findings}
-          icon={<Bug size={20} className="text-red-400" />}
+          icon={<Shield size={20} className="text-red-400" />}
           accent="border-red-500/40"
         />
         <StatCard
@@ -594,146 +638,6 @@ function IssuesTab({ issues }: { issues: Issue[] }) {
 }
 
 // ===========================================================================
-// ADVERSARIAL TAB
-// ===========================================================================
-
-function AdversarialTab({
-  data,
-}: {
-  data: { message?: string; results: AdversarialResults | Record<string, never> } | null;
-}) {
-  if (!data) return null;
-
-  const results = data.results as AdversarialResults;
-  const hasResults =
-    results &&
-    typeof results.overall_detection_rate === "number" &&
-    Array.isArray(results.categories);
-
-  if (!hasResults) {
-    return (
-      <Card title="Adversarial Testing">
-        <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-          <FlaskConical size={48} className="mb-4 text-gray-600" />
-          <p className="text-lg font-medium text-gray-400">No Results Yet</p>
-          <p className="mt-1 text-sm">
-            {data.message ||
-              "Run the adversarial test suite (ishi-gupta/vuln-test-suite) to generate detection results."}
-          </p>
-        </div>
-      </Card>
-    );
-  }
-
-  const rate = results.overall_detection_rate! * 100;
-  const categories = results.categories!;
-
-  const chartData = categories.map((c) => ({
-    name: c.name,
-    "Detection %": Math.round(c.rate * 100),
-    Detected: c.detected,
-    Missed: c.missed,
-  }));
-
-  return (
-    <div className="space-y-6">
-      {/* Big detection rate */}
-      <Card title="Overall Detection Rate">
-        <div className="flex items-center justify-center py-8">
-          <div className="text-center">
-            <div
-              className={`text-6xl font-bold ${
-                rate >= 80 ? "text-green-400" : rate >= 60 ? "text-yellow-400" : "text-red-400"
-              }`}
-            >
-              {rate.toFixed(0)}%
-            </div>
-            <p className="text-gray-400 mt-2 text-sm">
-              of planted vulnerabilities were detected by the scanner
-            </p>
-          </div>
-        </div>
-      </Card>
-
-      {/* Detection by category chart */}
-      <Card title="Detection Rate by Category">
-        <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={chartData} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis
-              type="number"
-              domain={[0, 100]}
-              tick={{ fill: "#9ca3af", fontSize: 12 }}
-              tickFormatter={(v: number) => `${v}%`}
-            />
-            <YAxis
-              type="category"
-              dataKey="name"
-              tick={{ fill: "#9ca3af", fontSize: 12 }}
-              width={150}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: "#1f2937",
-                border: "1px solid #374151",
-                borderRadius: "8px",
-              }}
-              formatter={(value: number, name: string) =>
-                name === "Detection %" ? `${value}%` : value
-              }
-            />
-            <Bar dataKey="Detection %" radius={[0, 4, 4, 0]} fill="#6366f1" />
-          </BarChart>
-        </ResponsiveContainer>
-      </Card>
-
-      {/* Detail table */}
-      <Card title="Category Breakdown">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-gray-400 border-b border-gray-800">
-                <th className="text-left py-2 px-3 font-medium">Category</th>
-                <th className="text-right py-2 px-3 font-medium">Total Planted</th>
-                <th className="text-right py-2 px-3 font-medium">Detected</th>
-                <th className="text-right py-2 px-3 font-medium">Missed</th>
-                <th className="text-right py-2 px-3 font-medium">Detection %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categories.map((c, i) => {
-                const pct = Math.round(c.rate * 100);
-                return (
-                  <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-900/50">
-                    <td className="py-2 px-3 font-medium">{c.name}</td>
-                    <td className="py-2 px-3 text-right text-gray-400">{c.total}</td>
-                    <td className="py-2 px-3 text-right text-green-400">{c.detected}</td>
-                    <td className="py-2 px-3 text-right text-red-400">{c.missed}</td>
-                    <td className="py-2 px-3 text-right">
-                      <span
-                        className={`font-semibold ${
-                          pct >= 80
-                            ? "text-green-400"
-                            : pct >= 60
-                              ? "text-yellow-400"
-                              : "text-red-400"
-                        }`}
-                      >
-                        {pct}%
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-// ===========================================================================
 // Shared Components
 // ===========================================================================
 
@@ -777,6 +681,171 @@ function EmptyState({ message }: { message: string }) {
     <div className="flex flex-col items-center justify-center py-12 text-gray-500">
       <Activity size={32} className="mb-3 text-gray-600" />
       <p className="text-sm">{message}</p>
+    </div>
+  );
+}
+
+// ===========================================================================
+// ACTION BUTTON
+// ===========================================================================
+
+function ActionButton({
+  label,
+  icon,
+  onClick,
+  color,
+  jobs,
+  jobType,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  color: "emerald" | "blue" | "orange";
+  jobs: Job[];
+  jobType: string;
+}) {
+  const running = jobs.some((j) => j.type === jobType && j.status === "running");
+
+  const colorClasses: Record<string, string> = {
+    emerald: "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20",
+    blue: "bg-blue-600 hover:bg-blue-500 shadow-blue-500/20",
+    orange: "bg-orange-600 hover:bg-orange-500 shadow-orange-500/20",
+  };
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={running}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-all shadow-lg ${
+        running
+          ? "bg-gray-700 cursor-not-allowed opacity-60"
+          : colorClasses[color]
+      }`}
+    >
+      {running ? <Loader2 size={14} className="animate-spin" /> : icon}
+      {running ? `${label}...` : label}
+    </button>
+  );
+}
+
+// ===========================================================================
+// JOBS PANEL
+// ===========================================================================
+
+function JobsPanel({ jobs }: { jobs: Job[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const sortedJobs = [...jobs].sort(
+    (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+  );
+
+  const jobTypeLabel: Record<string, string> = {
+    scan: "Scanner",
+    orchestrate: "Remediation",
+
+  };
+
+  const jobStatusBadge = (status: string) => {
+    const styles: Record<string, string> = {
+      running: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+      completed: "bg-green-500/20 text-green-400 border-green-500/30",
+      failed: "bg-red-500/20 text-red-400 border-red-500/30",
+    };
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold border ${
+          styles[status] ?? "bg-gray-700 text-gray-300 border-gray-600"
+        }`}
+      >
+        {status === "running" && <Loader2 size={10} className="animate-spin" />}
+        {status === "completed" && <CheckCircle size={10} />}
+        {status === "failed" && <XCircle size={10} />}
+        {status}
+      </span>
+    );
+  };
+
+  return (
+    <div className="mb-6">
+      <Card title="Background Jobs">
+        <div className="space-y-2">
+          {sortedJobs.map((job) => (
+            <div
+              key={job.id}
+              className="border border-gray-800 rounded-lg overflow-hidden"
+            >
+              <button
+                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-800/50 transition-colors text-left"
+                onClick={() => setExpanded(expanded === job.id ? null : job.id)}
+              >
+                <div className="flex items-center gap-3">
+                  <Terminal size={14} className="text-gray-500" />
+                  <span className="text-sm font-medium">
+                    {jobTypeLabel[job.type] ?? job.type}
+                  </span>
+                  {jobStatusBadge(job.status)}
+                </div>
+                <span className="text-xs text-gray-500">
+                  {new Date(job.started_at).toLocaleTimeString()}
+                </span>
+              </button>
+
+              {expanded === job.id && (
+                <div className="border-t border-gray-800 bg-gray-950 px-4 py-3 space-y-2">
+                  {/* Result summary */}
+                  {job.result && (
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(job.result).map(([k, v]) => (
+                        <span
+                          key={k}
+                          className="text-xs bg-gray-800 px-2 py-1 rounded text-gray-300"
+                        >
+                          <span className="text-gray-500">
+                            {k.replace(/_/g, " ")}:
+                          </span>{" "}
+                          {typeof v === "string" && v.startsWith("http") ? (
+                            <a
+                              href={v}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-indigo-400 hover:underline"
+                            >
+                              link
+                            </a>
+                          ) : (
+                            String(v)
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {job.error && (
+                    <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                      {job.error}
+                    </div>
+                  )}
+
+                  {/* Logs */}
+                  {job.logs.length > 0 && (
+                    <div className="bg-gray-900 rounded border border-gray-800 p-3 max-h-48 overflow-y-auto font-mono text-xs space-y-0.5">
+                      {job.logs.map((log, i) => (
+                        <div key={i} className="flex gap-2">
+                          <span className="text-gray-600 shrink-0">
+                            {new Date(log.time).toLocaleTimeString()}
+                          </span>
+                          <span className="text-gray-300">{log.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
     </div>
   );
 }
