@@ -7,7 +7,6 @@ import pytest
 from automation.issue_creator import (
     QUALITY_SCORES,
     filter_by_quality,
-    filter_by_severity,
     group_findings,
     quality_score,
     _grouped_issue_title,
@@ -140,40 +139,6 @@ class TestFilterByQuality:
         """Finding with score exactly equal to threshold should be included."""
         finding = _make_finding(severity=Severity.MEDIUM, confidence="medium")  # score 5
         result = filter_by_quality([finding], min_score=5)
-        assert len(result) == 1
-
-
-# ---------------------------------------------------------------------------
-# filter_by_severity()
-# ---------------------------------------------------------------------------
-
-
-class TestFilterBySeverity:
-    """Tests for the backward-compatible filter_by_severity() function."""
-
-    def test_filter_high_and_above(self) -> None:
-        findings = [
-            _make_finding(severity=Severity.CRITICAL),
-            _make_finding(severity=Severity.HIGH),
-            _make_finding(severity=Severity.MEDIUM),
-            _make_finding(severity=Severity.LOW),
-        ]
-        result = filter_by_severity(findings, min_severity="HIGH")
-        assert len(result) == 2
-        severities = {f.severity for f in result}
-        assert severities == {Severity.CRITICAL, Severity.HIGH}
-
-    def test_filter_low_keeps_all(self) -> None:
-        findings = [
-            _make_finding(severity=Severity.HIGH),
-            _make_finding(severity=Severity.LOW),
-        ]
-        result = filter_by_severity(findings, min_severity="LOW")
-        assert len(result) == 2
-
-    def test_filter_case_insensitive(self) -> None:
-        findings = [_make_finding(severity=Severity.HIGH)]
-        result = filter_by_severity(findings, min_severity="high")
         assert len(result) == 1
 
 

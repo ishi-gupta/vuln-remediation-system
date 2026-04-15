@@ -197,10 +197,6 @@ def run_semgrep(repo_path: str) -> list[VulnerabilityFinding]:
 
                 confidence = metadata.get("confidence", "MEDIUM")
 
-                # Skip low-confidence results to reduce noise
-                if confidence.upper() == "LOW":
-                    continue
-
                 findings.append(VulnerabilityFinding(
                     scanner="semgrep",
                     scan_type=ScanType.SAST,
