@@ -475,6 +475,8 @@ async def trigger_orchestration() -> dict[str, Any]:
         return JSONResponse(status_code=400, content={"error": "GITHUB_TOKEN not configured"})
 
     repo = GITHUB_REPO
+    if not repo:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
     job_id = _create_job("orchestrate")
     thread = threading.Thread(target=_run_orchestrator_background, args=(job_id, repo), daemon=True)
     thread.start()
@@ -525,6 +527,8 @@ async def trigger_adversarial() -> dict[str, Any]:
         return JSONResponse(status_code=400, content={"error": "DEVIN_API_KEY not configured"})
 
     repo = GITHUB_REPO
+    if not repo:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
     job_id = _create_job("adversarial")
     thread = threading.Thread(target=_run_adversarial_background, args=(job_id, repo), daemon=True)
     thread.start()
