@@ -9,6 +9,7 @@ from pathlib import Path
 # GitHub Configuration
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "ishi-gupta/superset")
+ENGINE_REPO = os.environ.get("ENGINE_REPO", "ishi-gupta/vuln-remediation-system")
 GITHUB_API_BASE = "https://api.github.com"
 
 # Devin API Configuration

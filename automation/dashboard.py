@@ -26,6 +26,7 @@ from automation.config import (
     DASHBOARD_PORT,
     DEVIN_API_KEY,
     DEVIN_API_BASE,
+    ENGINE_REPO,
     GITHUB_API_BASE,
     GITHUB_REPO,
     GITHUB_TOKEN,
@@ -316,67 +317,98 @@ async def get_jobs() -> dict[str, Any]:
 
 
 def _run_scan_background(job_id: str, repo: str) -> None:
-    """Background thread: scan a repo, persist findings, create issues."""
+    """Background thread: trigger the scan.yml GitHub Action and poll for completion."""
     try:
-        from automation.scanner import scan_repo
-        from automation.issue_creator import create_github_issues
+        import time as _time
 
-        _log_job(job_id, f"Cloning and scanning {repo}...")
-        findings, scan_run = scan_repo(repo)
-        _log_job(job_id, f"Scan complete: {scan_run.total_findings} findings ({scan_run.duration_seconds:.1f}s)")
+        engine_repo = ENGINE_REPO
+        workflow_file = "scan.yml"
+        headers = _github_headers()
 
-        # Persist to state.json
-        with _state_lock:
-            state = _load_state()
-            state.scan_runs.append(scan_run.to_dict())
-            existing_ids = {f.get("finding_id") for f in state.findings}
-            new_count = 0
-            for finding in findings:
-                fd = finding.to_dict()
-                if fd["finding_id"] not in existing_ids:
-                    state.findings.append(fd)
-                    existing_ids.add(fd["finding_id"])
-                    new_count += 1
-            state.save(str(STATE_FILE))
-        _log_job(job_id, f"Persisted {new_count} new findings to state.json")
+        # 1. Trigger the scan workflow via workflow_dispatch
+        _log_job(job_id, f"Triggering scan workflow on {engine_repo} for target {repo}...")
+        dispatch_resp = requests.post(
+            f"{GITHUB_API_BASE}/repos/{engine_repo}/actions/workflows/{workflow_file}/dispatches",
+            headers=headers,
+            json={"ref": "main", "inputs": {"target_repo": repo}},
+            timeout=15,
+        )
+        if dispatch_resp.status_code not in (204,):
+            raise RuntimeError(
+                f"Failed to trigger scan workflow: HTTP {dispatch_resp.status_code} — {dispatch_resp.text[:300]}"
+            )
+        _log_job(job_id, "Scan workflow triggered successfully")
 
-        # Create GitHub issues
-        issues_created = []
-        if GITHUB_TOKEN and findings:
-            _log_job(job_id, "Creating GitHub issues...")
-            issues_created = create_github_issues(findings, repo=repo)
-            _log_job(job_id, f"Created {len(issues_created)} GitHub issues")
+        # 2. Wait briefly for GitHub to register the run, then find it
+        _time.sleep(5)
+        run_id = None
+        for _attempt in range(10):
+            runs_resp = requests.get(
+                f"{GITHUB_API_BASE}/repos/{engine_repo}/actions/workflows/{workflow_file}/runs",
+                headers=headers,
+                params={"per_page": 5, "event": "workflow_dispatch"},
+                timeout=15,
+            )
+            if runs_resp.status_code == 200:
+                runs = runs_resp.json().get("workflow_runs", [])
+                for run in runs:
+                    if run["status"] in ("queued", "in_progress"):
+                        run_id = run["id"]
+                        break
+                if run_id:
+                    break
+            _time.sleep(3)
 
-            # Persist remediation records
-            if issues_created:
-                with _state_lock:
-                    state = _load_state()
-                    existing_issue_numbers = {
-                        r.get("issue_number") for r in state.remediation_records
-                    }
-                    for issue in issues_created:
-                        if issue["issue_number"] not in existing_issue_numbers:
-                            record = RemediationRecord(
-                                finding_id=issue["finding_id"],
-                                issue_number=issue["issue_number"],
-                                issue_url=issue["issue_url"],
-                                status=RemediationStatus.PENDING,
-                            )
-                            state.remediation_records.append(record.to_dict())
-                            existing_issue_numbers.add(issue["issue_number"])
-                    state.save(str(STATE_FILE))
-        else:
-            _log_job(job_id, "Skipping issue creation (no GITHUB_TOKEN or no findings)")
+        if not run_id:
+            raise RuntimeError("Could not find the triggered workflow run")
 
-        _finish_job(job_id, status="completed", result={
-            "total_findings": scan_run.total_findings,
-            "critical": scan_run.critical,
-            "high": scan_run.high,
-            "medium": scan_run.medium,
-            "low": scan_run.low,
-            "new_findings": new_count,
-            "issues_created": len(issues_created),
+        run_url = f"https://github.com/{engine_repo}/actions/runs/{run_id}"
+        _log_job(job_id, f"Workflow run started: {run_url}")
+
+        # 3. Poll until the workflow completes
+        poll_interval = 15
+        max_polls = 120  # up to 30 minutes
+        for _poll in range(max_polls):
+            _time.sleep(poll_interval)
+            status_resp = requests.get(
+                f"{GITHUB_API_BASE}/repos/{engine_repo}/actions/runs/{run_id}",
+                headers=headers,
+                timeout=15,
+            )
+            if status_resp.status_code != 200:
+                _log_job(job_id, f"Warning: failed to poll run status (HTTP {status_resp.status_code})")
+                continue
+
+            run_data = status_resp.json()
+            status = run_data.get("status", "unknown")
+            conclusion = run_data.get("conclusion")
+
+            if status == "completed":
+                if conclusion == "success":
+                    _log_job(job_id, "Scan workflow completed successfully")
+                    _log_job(job_id, f"Results: {run_url}")
+                    _finish_job(job_id, status="completed", result={
+                        "workflow_run_id": run_id,
+                        "workflow_url": run_url,
+                        "conclusion": conclusion,
+                    })
+                else:
+                    _log_job(job_id, f"Scan workflow finished with conclusion: {conclusion}")
+                    _finish_job(job_id, status="failed", error=f"Workflow conclusion: {conclusion}", result={
+                        "workflow_run_id": run_id,
+                        "workflow_url": run_url,
+                        "conclusion": conclusion,
+                    })
+                return
+
+            _log_job(job_id, f"Workflow status: {status} (polling...)")
+
+        # Timed out
+        _finish_job(job_id, status="failed", error="Timed out waiting for workflow to complete", result={
+            "workflow_run_id": run_id,
+            "workflow_url": run_url,
         })
+
     except Exception as e:
         logger.exception("Scan job %s failed", job_id)
         _finish_job(job_id, status="failed", error=str(e))
@@ -384,10 +416,12 @@ def _run_scan_background(job_id: str, repo: str) -> None:
 
 @app.post("/api/scan")
 async def trigger_scan() -> dict[str, Any]:
-    """Trigger a vulnerability scan of the target repo in the background."""
+    """Trigger a vulnerability scan via the scan.yml GitHub Action."""
     repo = GITHUB_REPO
     if not repo:
         return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
+    if not GITHUB_TOKEN:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_TOKEN not configured"})
 
     job_id = _create_job("scan")
     thread = threading.Thread(target=_run_scan_background, args=(job_id, repo), daemon=True)
