@@ -5,11 +5,14 @@ Serves API endpoints for metrics, findings, issues, sessions, and adversarial re
 plus the built React frontend from dashboard/dist/.
 """
 
+import copy
 import json
 import logging
+import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from fastapi import FastAPI
@@ -21,12 +24,15 @@ from automation.config import (
     DATA_DIR,
     DASHBOARD_HOST,
     DASHBOARD_PORT,
+    DEVIN_API_KEY,
+    DEVIN_API_BASE,
+    ENGINE_REPO,
     GITHUB_API_BASE,
     GITHUB_REPO,
     GITHUB_TOKEN,
     STATE_FILE,
 )
-from automation.models import SystemState
+from automation.models import SystemState, RemediationRecord, RemediationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,63 @@ app.add_middleware(
 FRONTEND_DIR = Path(__file__).parent.parent / "dashboard" / "dist"
 ADVERSARIAL_RESULTS_FILE = DATA_DIR / "adversarial_results.json"
 
+# ---------------------------------------------------------------------------
+# In-memory job tracker (for background scan / adversarial tasks)
+# ---------------------------------------------------------------------------
+
+_jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+
+def _create_job(job_type: str) -> str:
+    """Create a new tracked job and return its ID."""
+    job_id = f"{job_type}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+            "result": None,
+            "error": None,
+            "logs": [],
+        }
+    return job_id
+
+
+def _update_job(job_id: str, **kwargs: Any) -> None:
+    """Update a job's fields."""
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(kwargs)
+
+
+def _log_job(job_id: str, message: str) -> None:
+    """Append a log line to a job."""
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id]["logs"].append({
+                "time": datetime.now(timezone.utc).isoformat(),
+                "message": message,
+            })
+
+
+def _finish_job(job_id: str, status: str = "completed", result: Any = None, error: str | None = None) -> None:
+    """Mark a job as finished."""
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id]["status"] = status
+            _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _jobs[job_id]["result"] = result
+            _jobs[job_id]["error"] = error
+
+
+# ---------------------------------------------------------------------------
+# State file lock (prevents concurrent read-modify-write corruption)
+# ---------------------------------------------------------------------------
+
+_state_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -284,6 +347,271 @@ async def adversarial() -> dict[str, Any]:
             "results": {},
         }
     return {"results": results}
+
+
+# ---------------------------------------------------------------------------
+# Action Endpoints — trigger scan, adversarial, and orchestration
+# ---------------------------------------------------------------------------
+
+@app.get("/api/jobs")
+async def get_jobs() -> dict[str, Any]:
+    """Return all tracked background jobs."""
+    with _jobs_lock:
+        return {"jobs": copy.deepcopy(list(_jobs.values()))}
+
+
+def _run_scan_background(job_id: str, repo: str) -> None:
+    """Background thread: trigger the scan.yml GitHub Action and poll for completion."""
+    try:
+        import time as _time
+
+        engine_repo = ENGINE_REPO
+        workflow_file = "scan.yml"
+        headers = _github_headers()
+
+        # 1. Trigger the scan workflow via workflow_dispatch
+        _log_job(job_id, f"Triggering scan workflow on {engine_repo} for target {repo}...")
+        dispatch_resp = requests.post(
+            f"{GITHUB_API_BASE}/repos/{engine_repo}/actions/workflows/{workflow_file}/dispatches",
+            headers=headers,
+            json={"ref": "main", "inputs": {"target_repo": repo}},
+            timeout=15,
+        )
+        if dispatch_resp.status_code not in (204,):
+            raise RuntimeError(
+                f"Failed to trigger scan workflow: HTTP {dispatch_resp.status_code} — {dispatch_resp.text[:300]}"
+            )
+        _log_job(job_id, "Scan workflow triggered successfully")
+
+        # 2. Wait briefly for GitHub to register the run, then find it
+        _time.sleep(5)
+        run_id = None
+        for _attempt in range(10):
+            runs_resp = requests.get(
+                f"{GITHUB_API_BASE}/repos/{engine_repo}/actions/workflows/{workflow_file}/runs",
+                headers=headers,
+                params={"per_page": 5, "event": "workflow_dispatch"},
+                timeout=15,
+            )
+            if runs_resp.status_code == 200:
+                runs = runs_resp.json().get("workflow_runs", [])
+                for run in runs:
+                    if run["status"] in ("queued", "in_progress"):
+                        run_id = run["id"]
+                        break
+                if run_id:
+                    break
+            _time.sleep(3)
+
+        if not run_id:
+            raise RuntimeError("Could not find the triggered workflow run")
+
+        run_url = f"https://github.com/{engine_repo}/actions/runs/{run_id}"
+        _log_job(job_id, f"Workflow run started: {run_url}")
+
+        # 3. Poll until the workflow completes
+        poll_interval = 15
+        max_polls = 120  # up to 30 minutes
+        for _poll in range(max_polls):
+            _time.sleep(poll_interval)
+            status_resp = requests.get(
+                f"{GITHUB_API_BASE}/repos/{engine_repo}/actions/runs/{run_id}",
+                headers=headers,
+                timeout=15,
+            )
+            if status_resp.status_code != 200:
+                _log_job(job_id, f"Warning: failed to poll run status (HTTP {status_resp.status_code})")
+                continue
+
+            run_data = status_resp.json()
+            status = run_data.get("status", "unknown")
+            conclusion = run_data.get("conclusion")
+
+            if status == "completed":
+                if conclusion == "success":
+                    _log_job(job_id, "Scan workflow completed successfully")
+                    _log_job(job_id, f"Results: {run_url}")
+                    _finish_job(job_id, status="completed", result={
+                        "workflow_run_id": run_id,
+                        "workflow_url": run_url,
+                        "conclusion": conclusion,
+                    })
+                else:
+                    _log_job(job_id, f"Scan workflow finished with conclusion: {conclusion}")
+                    _finish_job(job_id, status="failed", error=f"Workflow conclusion: {conclusion}", result={
+                        "workflow_run_id": run_id,
+                        "workflow_url": run_url,
+                        "conclusion": conclusion,
+                    })
+                return
+
+            _log_job(job_id, f"Workflow status: {status} (polling...)")
+
+        # Timed out
+        _finish_job(job_id, status="failed", error="Timed out waiting for workflow to complete", result={
+            "workflow_run_id": run_id,
+            "workflow_url": run_url,
+        })
+
+    except Exception as e:
+        logger.exception("Scan job %s failed", job_id)
+        _finish_job(job_id, status="failed", error=str(e))
+
+
+@app.post("/api/scan")
+async def trigger_scan() -> dict[str, Any]:
+    """Trigger a vulnerability scan via the scan.yml GitHub Action."""
+    repo = GITHUB_REPO
+    if not repo:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
+    if not GITHUB_TOKEN:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_TOKEN not configured"})
+
+    job_id = _create_job("scan")
+    thread = threading.Thread(target=_run_scan_background, args=(job_id, repo), daemon=True)
+    thread.start()
+
+    return {"job_id": job_id, "status": "running", "repo": repo}
+
+
+def _run_orchestrator_background(job_id: str, repo: str) -> None:
+    """Background thread: fetch open security issues and trigger Devin sessions."""
+    try:
+        from automation.orchestrator import trigger_remediation
+
+        _log_job(job_id, f"Fetching open security issues from {repo}...")
+
+        # Fetch open issues with security+automated labels
+        issues: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = requests.get(
+                f"{GITHUB_API_BASE}/repos/{repo}/issues",
+                headers=_github_headers(),
+                params={"state": "open", "labels": "security,automated", "per_page": 100, "page": page},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            issues.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+
+        # Filter out issues that already have remediation started
+        actionable = [
+            i for i in issues
+            if not any(l["name"] == "remediation-started" for l in i.get("labels", []))
+        ]
+        _log_job(job_id, f"Found {len(issues)} security issues, {len(actionable)} need remediation")
+
+        if not actionable:
+            _finish_job(job_id, status="completed", result={"sessions_created": 0, "message": "No issues need remediation"})
+            return
+
+        sessions_created = 0
+        records = []
+
+        # Perform network I/O outside the lock to avoid starving other jobs
+        for issue in actionable[:5]:  # Cap at 5 concurrent
+            _log_job(job_id, f"Triggering Devin session for issue #{issue['number']}: {issue['title'][:60]}")
+            record = trigger_remediation(
+                issue=issue,
+                repo=repo,
+                token=GITHUB_TOKEN,
+                api_key=DEVIN_API_KEY,
+            )
+            if record:
+                records.append(record)
+                sessions_created += 1
+                _log_job(job_id, f"  → Session created: {record.devin_session_id}")
+            else:
+                _log_job(job_id, f"  → Failed to create session for issue #{issue['number']}")
+
+        # Brief lock only for state persistence
+        if records:
+            with _state_lock:
+                state = _load_state()
+                for record in records:
+                    state.active_sessions.append(record.to_dict())
+                state.save(str(STATE_FILE))
+        _finish_job(job_id, status="completed", result={"sessions_created": sessions_created})
+
+    except Exception as e:
+        logger.exception("Orchestrator job %s failed", job_id)
+        _finish_job(job_id, status="failed", error=str(e))
+
+
+@app.post("/api/orchestrate")
+async def trigger_orchestration() -> dict[str, Any]:
+    """Trigger Devin remediation sessions for open security issues."""
+    if not DEVIN_API_KEY:
+        return JSONResponse(status_code=400, content={"error": "DEVIN_API_KEY not configured"})
+    if not GITHUB_TOKEN:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_TOKEN not configured"})
+
+    repo = GITHUB_REPO
+    if not repo:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
+    job_id = _create_job("orchestrate")
+    thread = threading.Thread(target=_run_orchestrator_background, args=(job_id, repo), daemon=True)
+    thread.start()
+
+    return {"job_id": job_id, "status": "running", "repo": repo}
+
+
+def _run_adversarial_background(job_id: str, repo: str) -> None:
+    """Background thread: generate buggy PRs on the target repo via Devin."""
+    try:
+        from automation.adversarial_generator import (
+            create_adversarial_session,
+            generate_round_id,
+            SCANNER_CAPABILITIES,
+        )
+
+        round_id = generate_round_id()
+        _log_job(job_id, f"Starting adversarial generation (round {round_id})")
+        _log_job(job_id, f"Target repo: {repo}")
+        _log_job(job_id, f"Categories: {', '.join(SCANNER_CAPABILITIES.keys())}")
+
+        session_record = create_adversarial_session(
+            round_id=round_id,
+            num_files=3,
+            api_key=DEVIN_API_KEY,
+        )
+
+        if session_record:
+            _log_job(job_id, f"Devin session created: {session_record.get('session_url', 'N/A')}")
+            _finish_job(job_id, status="completed", result={
+                "round_id": round_id,
+                "session_id": session_record.get("session_id"),
+                "session_url": session_record.get("session_url"),
+                "categories": list(SCANNER_CAPABILITIES.keys()),
+            })
+        else:
+            _finish_job(job_id, status="failed", error="Failed to create Devin session. Check DEVIN_API_KEY.")
+
+    except Exception as e:
+        logger.exception("Adversarial job %s failed", job_id)
+        _finish_job(job_id, status="failed", error=str(e))
+
+
+@app.post("/api/adversarial/generate")
+async def trigger_adversarial() -> dict[str, Any]:
+    """Trigger adversarial buggy PR generation via Devin."""
+    if not DEVIN_API_KEY:
+        return JSONResponse(status_code=400, content={"error": "DEVIN_API_KEY not configured"})
+
+    repo = GITHUB_REPO
+    if not repo:
+        return JSONResponse(status_code=400, content={"error": "GITHUB_REPO not configured"})
+    job_id = _create_job("adversarial")
+    thread = threading.Thread(target=_run_adversarial_background, args=(job_id, repo), daemon=True)
+    thread.start()
+
+    return {"job_id": job_id, "status": "running", "repo": repo}
 
 
 # ---------------------------------------------------------------------------
