@@ -3,7 +3,6 @@ Remediation Orchestrator — watches for new security issues in the target repo
 and triggers Devin API sessions to fix them. Tracks status in data/state.json.
 """
 
-import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ from automation.config import (
     GITHUB_REPO,
     DEVIN_API_KEY,
     DEVIN_API_BASE,
+    DEVIN_ORG_ID,
     DEVIN_PLAYBOOK_ID,
     STATE_FILE,
     STRUCTURED_OUTPUT_SCHEMA,
@@ -125,10 +125,14 @@ def comment_on_issue(repo: str, issue_number: int, body: str, token: str) -> Non
 def create_devin_session(
     prompt: str,
     api_key: str,
+    org_id: str,
     playbook_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
-    Create a new Devin session via the API.
+    Create a new Devin session via the v3 API.
+
+    Uses ``/v3/organizations/{org_id}/sessions`` which requires a service-user
+    key with the ``ManageOrgSessions`` permission.
 
     When a ``playbook_id`` is provided the session is linked to the Devin
     Playbook so the agent receives the full remediation procedure.  The
@@ -149,7 +153,7 @@ def create_devin_session(
         payload["playbook_id"] = playbook_id
 
     resp = requests.post(
-        f"{DEVIN_API_BASE}/sessions",
+        f"{DEVIN_API_BASE}/organizations/{org_id}/sessions",
         headers=headers,
         json=payload,
     )
@@ -165,14 +169,16 @@ def create_devin_session(
     return None
 
 
-def get_session_status(session_id: str, api_key: str) -> Optional[dict]:
-    """Check the status of a Devin session."""
+def get_session_status(
+    session_id: str, api_key: str, org_id: str
+) -> Optional[dict]:
+    """Check the status of a Devin session via the v3 API."""
     headers = {
         "Authorization": f"Bearer {api_key}",
     }
 
     resp = requests.get(
-        f"{DEVIN_API_BASE}/sessions/{session_id}",
+        f"{DEVIN_API_BASE}/organizations/{org_id}/sessions/{session_id}",
         headers=headers,
     )
 
@@ -216,7 +222,9 @@ def trigger_remediation(
     )
 
     # 4. Create Devin session with the attached playbook
-    session = create_devin_session(prompt, api_key, playbook_id=DEVIN_PLAYBOOK_ID)
+    session = create_devin_session(
+        prompt, api_key, DEVIN_ORG_ID, playbook_id=DEVIN_PLAYBOOK_ID
+    )
     if not session:
         add_label(repo, issue_number, "remediation-failed", token)
         comment_on_issue(
@@ -255,7 +263,7 @@ def trigger_remediation(
 
 
 def poll_active_sessions(
-    state: SystemState, api_key: str, token: str, repo: str
+    state: SystemState, api_key: str, org_id: str, token: str, repo: str
 ) -> None:
     """Check status of all active Devin sessions and update state."""
     completed_indices: list[int] = []
@@ -268,20 +276,26 @@ def poll_active_sessions(
             completed_indices.append(idx)
             continue
 
-        status_data = get_session_status(session_id, api_key)
+        status_data = get_session_status(session_id, api_key, org_id)
         if not status_data:
             continue
 
         session_status = status_data.get("status", "")
 
-        if session_status in ("finished", "stopped"):
+        # v3 statuses: "exit" = completed, "error" / "suspended" = terminal
+        status_detail = status_data.get("status_detail", "")
+
+        if session_status == "exit" or (
+            session_status == "running" and status_detail == "finished"
+        ):
             # Check structured output for PR URL and fix status
             structured_output = status_data.get("structured_output", {}) or {}
             pr_url = structured_output.get("pr_url", "")
-            # Also check the top-level pull_request field from the API
+            # v3 returns pull_requests as a list
             if not pr_url:
-                pr_info = status_data.get("pull_request") or {}
-                pr_url = pr_info.get("url", "")
+                prs = status_data.get("pull_requests", []) or []
+                if prs:
+                    pr_url = prs[0].get("pr_url", "")
             fix_status = structured_output.get("status", "needs_review")
 
             session_info["status"] = fix_status
@@ -309,7 +323,7 @@ def poll_active_sessions(
             state.remediation_records.append(session_info)
             completed_indices.append(idx)
 
-        elif session_status in ("error", "expired", "blocked"):
+        elif session_status in ("error", "suspended"):
             session_info["status"] = "failed"
             session_info["updated_at"] = datetime.now(timezone.utc).isoformat()
             add_label(repo, issue_number, "remediation-failed", token)
@@ -350,8 +364,13 @@ def run_orchestrator(
     token = token or GITHUB_TOKEN
     api_key = api_key or DEVIN_API_KEY
 
+    org_id = DEVIN_ORG_ID
+
     if not token or not api_key:
         logger.error("GITHUB_TOKEN and DEVIN_API_KEY must both be set.")
+        return
+    if not org_id:
+        logger.error("DEVIN_ORG_ID must be set for the v3 API.")
         return
 
     state = SystemState.load(str(STATE_FILE))
@@ -364,7 +383,7 @@ def run_orchestrator(
             logger.info(
                 "Checking %d active sessions ...", len(state.active_sessions)
             )
-            poll_active_sessions(state, api_key, token, repo)
+            poll_active_sessions(state, api_key, org_id, token, repo)
 
         # Get new issues
         new_issues = get_new_security_issues(repo, token)

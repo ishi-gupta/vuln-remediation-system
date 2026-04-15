@@ -37,6 +37,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GITHUB_REPO: ishi-gupta/superset
           DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
         run: |
           python -m automation.orchestrator \
             --repo ishi-gupta/superset \
