@@ -87,6 +87,7 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Issues from findings
+        id: create-issues
         if: github.event_name != 'pull_request' && github.event.client_payload.trigger_event != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
@@ -95,3 +96,15 @@ jobs:
           python -m automation.issue_creator \
             --input scan_results.json \
             --repo "$TARGET_REPO"
+
+      - name: Trigger remediation orchestrator
+        if: steps.create-issues.outcome == 'success' && github.event_name != 'pull_request' && github.event.client_payload.trigger_event != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/ishi-gupta/vuln-remediation-system/actions/workflows/remediate.yml/dispatches" \
+            -d '{"ref":"main"}'
+          echo "Remediation orchestrator triggered"
