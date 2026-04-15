@@ -1,0 +1,11 @@
+.git
+.github
+.env
+*.egg-info
+__pycache__
+node_modules
+dashboard/node_modules
+dashboard/src
+docs
+.venv
+*.pyc

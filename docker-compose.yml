@@ -1,0 +1,58 @@
+# ──────────────────────────────────────────────────────────────
+# Vulnerability Remediation System — Docker Compose
+# ──────────────────────────────────────────────────────────────
+# Usage:
+#   cp .env.example .env        # fill in your keys
+#   docker compose up            # start dashboard
+#   docker compose run scanner   # run vulnerability scan
+#   docker compose run orchestrator  # trigger Devin remediation
+# ──────────────────────────────────────────────────────────────
+
+services:
+  # ── Dashboard ──────────────────────────────────────────────
+  # Observability UI: metrics, issues, sessions, adversarial results
+  dashboard:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Scanner ────────────────────────────────────────────────
+  # Runs Bandit, Semgrep, pip-audit, Gitleaks against the target repo
+  scanner:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "-m", "automation.scanner"]
+    command: ["--target", "${GITHUB_REPO:-ishi-gupta/superset}", "--output", "/app/data/scan_results.json"]
+    profiles: ["tools"]
+
+  # ── Issue Creator ──────────────────────────────────────────
+  # Converts scan findings into GitHub Issues (with deduplication)
+  issue-creator:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "-m", "automation.issue_creator"]
+    command: ["--input", "/app/data/scan_results.json", "--repo", "${GITHUB_REPO:-ishi-gupta/superset}"]
+    profiles: ["tools"]
+
+  # ── Orchestrator ───────────────────────────────────────────
+  # Watches for security issues and triggers Devin AI sessions to fix them
+  orchestrator:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "-m", "automation.orchestrator"]
+    command: ["--repo", "${GITHUB_REPO:-ishi-gupta/superset}", "--one-shot"]
+    profiles: ["tools"]
