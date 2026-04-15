@@ -60,19 +60,6 @@ def filter_by_quality(
     return [f for f in findings if quality_score(f) >= min_score]
 
 
-def filter_by_severity(
-    findings: list[VulnerabilityFinding],
-    min_severity: str = "LOW",
-) -> list[VulnerabilityFinding]:
-    """Filter findings by minimum severity level (backward-compatible helper)."""
-    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    threshold = severity_order.get(min_severity.lower(), 3)
-    return [
-        f for f in findings
-        if severity_order.get(f.severity.value, 3) <= threshold
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Grouping related findings
 # ---------------------------------------------------------------------------
@@ -417,25 +404,10 @@ if __name__ == "__main__":
         default=DEFAULT_MIN_QUALITY_SCORE,
         help=f"Minimum quality score to include a finding (default: {DEFAULT_MIN_QUALITY_SCORE})",
     )
-    parser.add_argument(
-        "--min-severity",
-        type=str,
-        default=None,
-        help="Minimum severity level (critical/high/medium/low). Applied before quality scoring.",
-    )
     args = parser.parse_args()
 
     findings = load_findings_from_json(args.input)
     logger.info("Loaded %d findings from %s", len(findings), args.input)
-
-    # Apply severity filter if specified (backward compatibility)
-    if args.min_severity:
-        findings = filter_by_severity(findings, min_severity=args.min_severity)
-        logger.info(
-            "After severity filter (>=%s): %d findings",
-            args.min_severity,
-            len(findings),
-        )
 
     issues = create_github_issues(
         findings,
