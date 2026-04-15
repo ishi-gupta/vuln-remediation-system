@@ -433,26 +433,31 @@ def _run_orchestrator_background(job_id: str, repo: str) -> None:
             return
 
         sessions_created = 0
+        records = []
 
-        with _state_lock:
-            state = _load_state()
+        # Perform network I/O outside the lock to avoid starving other jobs
+        for issue in actionable[:5]:  # Cap at 5 concurrent
+            _log_job(job_id, f"Triggering Devin session for issue #{issue['number']}: {issue['title'][:60]}")
+            record = trigger_remediation(
+                issue=issue,
+                repo=repo,
+                token=GITHUB_TOKEN,
+                api_key=DEVIN_API_KEY,
+            )
+            if record:
+                records.append(record)
+                sessions_created += 1
+                _log_job(job_id, f"  → Session created: {record.devin_session_id}")
+            else:
+                _log_job(job_id, f"  → Failed to create session for issue #{issue['number']}")
 
-            for issue in actionable[:5]:  # Cap at 5 concurrent
-                _log_job(job_id, f"Triggering Devin session for issue #{issue['number']}: {issue['title'][:60]}")
-                record = trigger_remediation(
-                    issue=issue,
-                    repo=repo,
-                    token=GITHUB_TOKEN,
-                    api_key=DEVIN_API_KEY,
-                )
-                if record:
+        # Brief lock only for state persistence
+        if records:
+            with _state_lock:
+                state = _load_state()
+                for record in records:
                     state.active_sessions.append(record.to_dict())
-                    sessions_created += 1
-                    _log_job(job_id, f"  → Session created: {record.devin_session_id}")
-                else:
-                    _log_job(job_id, f"  → Failed to create session for issue #{issue['number']}")
-
-            state.save(str(STATE_FILE))
+                state.save(str(STATE_FILE))
         _finish_job(job_id, status="completed", result={"sessions_created": sessions_created})
 
     except Exception as e:
