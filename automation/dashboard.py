@@ -140,7 +140,7 @@ def _fetch_github_issues() -> list[dict[str, Any]]:
     while True:
         url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/issues"
         params = {
-            "state": "all",
+            "state": "open",
             "labels": "security,automated",
             "per_page": per_page,
             "page": page,
