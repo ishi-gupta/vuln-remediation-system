@@ -314,6 +314,7 @@ def run_evaluation(
         sys.executable, "-m", "automation.scanner",
         "--target", target,
         "--output", str(scan_output),
+        "--no-persist-state",
     ]
 
     result = subprocess.run(

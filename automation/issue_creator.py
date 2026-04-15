@@ -19,8 +19,9 @@ from automation.config import (
     SEVERITY_LABELS,
     SCAN_TYPE_LABELS,
     SYSTEM_LABELS,
+    STATE_FILE,
 )
-from automation.models import VulnerabilityFinding, Severity, ScanType
+from automation.models import VulnerabilityFinding, Severity, ScanType, RemediationRecord, RemediationStatus, SystemState
 
 logger = logging.getLogger(__name__)
 
@@ -234,3 +235,25 @@ if __name__ == "__main__":
         findings, repo=args.repo, max_issues=args.max_issues
     )
     print(f"\nCreated {len(issues)} GitHub Issues")
+
+    # Persist remediation records into data/state.json
+    if issues:
+        state_path = str(STATE_FILE)
+        state = SystemState.load(state_path)
+
+        existing_finding_ids = {
+            r.get("finding_id") for r in state.remediation_records
+        }
+        for issue in issues:
+            if issue["finding_id"] not in existing_finding_ids:
+                record = RemediationRecord(
+                    finding_id=issue["finding_id"],
+                    issue_number=issue["issue_number"],
+                    issue_url=issue["issue_url"],
+                    status=RemediationStatus.PENDING,
+                )
+                state.remediation_records.append(record.to_dict())
+                existing_finding_ids.add(issue["finding_id"])
+
+        state.save(state_path)
+        print(f"State persisted to {state_path}")
