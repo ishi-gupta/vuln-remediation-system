@@ -16,7 +16,9 @@ GITHUB_API_BASE = "https://api.github.com"
 DEVIN_API_KEY = os.environ.get("DEVIN_API_KEY", "")
 DEVIN_API_BASE = "https://api.devin.ai/v3"
 DEVIN_ORG_ID = os.environ.get("DEVIN_ORG_ID", "")
-DEVIN_PLAYBOOK_ID = os.environ.get("DEVIN_PLAYBOOK_ID", "playbook-d0bb41a95a3e49a992ba4bd28fa09139")
+DEVIN_PLAYBOOK_ID = os.environ.get(
+    "DEVIN_PLAYBOOK_ID", "playbook-d0bb41a95a3e49a992ba4bd28fa09139"
+)
 
 # Scanning Configuration
 MAX_ISSUES_PER_RUN = int(os.environ.get("MAX_ISSUES_PER_RUN", "50"))
