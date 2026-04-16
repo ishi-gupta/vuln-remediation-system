@@ -27,6 +27,9 @@ import {
   FlaskConical,
   LayoutDashboard,
   ListChecks,
+  Zap,
+  Loader2,
+  X,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -95,6 +98,24 @@ interface AdversarialCategory {
 interface AdversarialResults {
   overall_detection_rate?: number;
   categories?: AdversarialCategory[];
+}
+
+interface SimulateCategory {
+  id: string;
+  name: string;
+  cwe_id: string;
+  severity: string;
+  pattern_count: number;
+}
+
+interface SimulateSession {
+  bug_id: string;
+  category: string;
+  cwe_id: string;
+  pattern_name: string;
+  session_id: string;
+  session_url: string;
+  status: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +200,56 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
+  // Simulate modal state
+  const [showSimulate, setShowSimulate] = useState(false);
+  const [simCategories, setSimCategories] = useState<SimulateCategory[]>([]);
+  const [simSelected, setSimSelected] = useState<string[]>([]);
+  const [simCount, setSimCount] = useState(3);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simResult, setSimResult] = useState<{
+    message: string;
+    sessions: SimulateSession[];
+  } | null>(null);
+
+  const openSimulateModal = async () => {
+    setShowSimulate(true);
+    setSimResult(null);
+    setSimSelected([]);
+    setSimCount(3);
+    try {
+      const res = await fetch("/api/simulate/categories");
+      const data = await res.json();
+      setSimCategories(data.categories ?? []);
+    } catch (err) {
+      console.error("Failed to fetch categories", err);
+    }
+  };
+
+  const runSimulation = async () => {
+    setSimLoading(true);
+    setSimResult(null);
+    try {
+      const res = await fetch("/api/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          count: simCount,
+          categories: simSelected.length > 0 ? simSelected : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSimResult({ message: data.error || "Failed to simulate", sessions: [] });
+      } else {
+        setSimResult({ message: data.message, sessions: data.sessions ?? [] });
+      }
+    } catch (err) {
+      setSimResult({ message: "Network error — is the backend running?", sessions: [] });
+    } finally {
+      setSimLoading(false);
+    }
+  };
+
   const fetchData = useCallback(async () => {
     try {
       const [mRes, iRes, aRes] = await Promise.all([
@@ -245,6 +316,13 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <button
+              onClick={openSimulateModal}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors shadow-lg shadow-red-500/20"
+            >
+              <Zap size={16} />
+              Test Buggy PRs
+            </button>
             {lastUpdated && (
               <span className="text-xs text-gray-500">
                 Updated {lastUpdated.toLocaleTimeString()}
@@ -267,6 +345,143 @@ export default function App() {
         {tabButton("issues", "Issues", ListChecks)}
         {tabButton("adversarial", "Adversarial Testing", FlaskConical)}
       </nav>
+
+      {/* Simulate Modal */}
+      {showSimulate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <div className="flex items-center gap-2">
+                <Zap size={20} className="text-red-400" />
+                <h2 className="text-lg font-bold">Test Buggy PRs</h2>
+              </div>
+              <button
+                onClick={() => setShowSimulate(false)}
+                className="p-1 rounded hover:bg-gray-800 text-gray-400 hover:text-gray-200"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="px-6 py-5 space-y-5">
+              <p className="text-sm text-gray-400">
+                Spawn baby Devin sessions that act as careless engineers, pushing
+                intentionally vulnerable code to Superset. This triggers the full
+                cycle: scan &rarr; issues &rarr; remediation.
+              </p>
+
+              {/* Count */}
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1">
+                  Number of buggy PRs
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={simCount}
+                  onChange={(e) => setSimCount(Math.max(1, Math.min(10, Number(e.target.value))))}
+                  className="w-24 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              {/* Categories */}
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-2">
+                  Vulnerability categories{" "}
+                  <span className="text-gray-600">(leave empty for random mix)</span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {simCategories.map((cat) => {
+                    const selected = simSelected.includes(cat.id);
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() =>
+                          setSimSelected((prev) =>
+                            selected
+                              ? prev.filter((c) => c !== cat.id)
+                              : [...prev, cat.id]
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                          selected
+                            ? "bg-indigo-600/30 border-indigo-500 text-indigo-300"
+                            : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                        }`}
+                      >
+                        {cat.name} ({cat.cwe_id})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Result */}
+              {simResult && (
+                <div className="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
+                  <p className="text-sm font-medium mb-2">{simResult.message}</p>
+                  {simResult.sessions.length > 0 && (
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                      {simResult.sessions.map((s, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between text-xs"
+                        >
+                          <span className="text-gray-400">
+                            {s.category.replace("_", " ")} &middot;{" "}
+                            {s.pattern_name}
+                          </span>
+                          {s.session_url ? (
+                            <a
+                              href={s.session_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-indigo-400 hover:underline flex items-center gap-1"
+                            >
+                              Session <ExternalLink size={10} />
+                            </a>
+                          ) : (
+                            <span className="text-red-400">failed</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setShowSimulate(false)}
+                  className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={runSimulation}
+                  disabled={simLoading}
+                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                >
+                  {simLoading ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      Spawning&hellip;
+                    </>
+                  ) : (
+                    <>
+                      <Bug size={14} />
+                      Launch Buggy PRs
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">

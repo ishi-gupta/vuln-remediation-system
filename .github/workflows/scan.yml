@@ -95,3 +95,15 @@ jobs:
           python -m automation.issue_creator \
             --input scan_results.json \
             --repo "$TARGET_REPO"
+
+      - name: Trigger remediation for new issues
+        if: github.event_name != 'pull_request' && github.event.client_payload.trigger_event != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_REPO: ${{ env.TARGET_REPO }}
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
+        run: |
+          python -m automation.orchestrator \
+            --repo "$TARGET_REPO" \
+            --one-shot
