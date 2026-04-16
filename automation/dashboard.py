@@ -434,7 +434,8 @@ async def metrics() -> dict[str, Any]:
     pull_requests = _fetch_pull_requests(state="all", limit=100)
 
     total_findings = len(all_issues)
-    issues_created = total_findings
+    open_issues = len([i for i in all_issues if i.get("state") == "open"])
+    closed_issues = len([i for i in all_issues if i.get("state") == "closed"])
 
     # Severity breakdown from GitHub issues
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -481,7 +482,8 @@ async def metrics() -> dict[str, Any]:
         "overview": {
             "total_scans": total_scans,
             "total_findings": total_findings,
-            "issues_created": issues_created,
+            "open_issues": open_issues,
+            "closed_issues": closed_issues,
             "active_sessions": active_sessions,
             "success_rate": success_rate,
         },
@@ -501,7 +503,7 @@ async def findings() -> dict[str, Any]:
 
 @app.get("/api/issues")
 async def issues() -> dict[str, Any]:
-    issue_list = _fetch_github_issues(state="all")
+    issue_list = _fetch_github_issues(state="open")
     return {"issues": issue_list}
 
 

@@ -38,7 +38,8 @@ import {
 interface Overview {
   total_scans: number;
   total_findings: number;
-  issues_created: number;
+  open_issues: number;
+  closed_issues: number;
   active_sessions: number;
   success_rate: number;
 }
@@ -355,18 +356,24 @@ function OverviewTab({ metrics }: { metrics: Metrics }) {
   return (
     <div className="space-y-6">
       {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard
-          title="Total Findings"
+          title="Total Discovered"
           value={overview.total_findings}
-          icon={<Shield size={20} className="text-red-400" />}
+          icon={<Shield size={20} className="text-purple-400" />}
+          accent="border-purple-500/40"
+        />
+        <StatCard
+          title="Open Issues"
+          value={overview.open_issues}
+          icon={<AlertTriangle size={20} className="text-red-400" />}
           accent="border-red-500/40"
         />
         <StatCard
-          title="Issues Created"
-          value={overview.issues_created}
-          icon={<AlertTriangle size={20} className="text-orange-400" />}
-          accent="border-orange-500/40"
+          title="Closed (Fixed)"
+          value={overview.closed_issues}
+          icon={<CheckCircle size={20} className="text-green-400" />}
+          accent="border-green-500/40"
         />
         <StatCard
           title="Active Sessions"
@@ -377,8 +384,8 @@ function OverviewTab({ metrics }: { metrics: Metrics }) {
         <StatCard
           title="Success Rate"
           value={`${overview.success_rate}%`}
-          icon={<CheckCircle size={20} className="text-green-400" />}
-          accent="border-green-500/40"
+          icon={<CheckCircle size={20} className="text-emerald-400" />}
+          accent="border-emerald-500/40"
         />
       </div>
 
