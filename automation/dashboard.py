@@ -286,7 +286,7 @@ async def sessions() -> dict[str, Any]:
 
 class SimulateRequest(BaseModel):
     """Request body for the simulate endpoint."""
-    count: int = 3
+    count: int = 1
     categories: list[str] | None = None
     repo: str = GITHUB_REPO
 

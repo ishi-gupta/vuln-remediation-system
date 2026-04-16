@@ -204,7 +204,7 @@ export default function App() {
   const [showSimulate, setShowSimulate] = useState(false);
   const [simCategories, setSimCategories] = useState<SimulateCategory[]>([]);
   const [simSelected, setSimSelected] = useState<string[]>([]);
-  const [simCount, setSimCount] = useState(3);
+  const [simCount, setSimCount] = useState(1);
   const [simLoading, setSimLoading] = useState(false);
   const [simResult, setSimResult] = useState<{
     message: string;
@@ -215,7 +215,7 @@ export default function App() {
     setShowSimulate(true);
     setSimResult(null);
     setSimSelected([]);
-    setSimCount(3);
+    setSimCount(1);
     try {
       const res = await fetch("/api/simulate/categories");
       const data = await res.json();
@@ -379,7 +379,7 @@ export default function App() {
                 <input
                   type="number"
                   min={1}
-                  max={10}
+                  max={5}
                   value={simCount}
                   onChange={(e) => setSimCount(Math.max(1, Math.min(10, Number(e.target.value))))}
                   className="w-24 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500"
