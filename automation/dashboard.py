@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from automation.config import (
     DATA_DIR,
@@ -26,11 +27,18 @@ from automation.config import (
     DASHBOARD_PORT,
     DEVIN_API_KEY,
     DEVIN_API_BASE,
+    DEVIN_ORG_ID,
     ENGINE_REPO,
     GITHUB_API_BASE,
     GITHUB_REPO,
     GITHUB_TOKEN,
     STATE_FILE,
+)
+from automation.adversarial_generator import (
+    ADVERSARIAL_PLAYBOOK_ID,
+    VULNERABILITY_CATEGORIES,
+    plan_bugs,
+    spawn_baby_devins,
 )
 from automation.models import SystemState, RemediationRecord, RemediationStatus
 
@@ -521,6 +529,96 @@ async def sessions() -> dict[str, Any]:
         if i.get("has_remediation") or i.get("remediation_failed")
     ]
     return {"sessions": active}
+
+
+class SimulateRequest(BaseModel):
+    """Request body for the simulate endpoint."""
+    count: int = 1
+    categories: list[str] | None = None
+    repo: str = GITHUB_REPO
+
+
+@app.post("/api/simulate")
+async def simulate(req: SimulateRequest) -> dict[str, Any]:
+    """Spawn baby Devin sessions that push buggy code to the target repo.
+
+    This kicks off the full adversarial cycle:
+      1. Baby Devins push vulnerable code -> PRs merged
+      2. trigger-vuln-scan.yml fires -> scanner runs
+      3. Scanner creates GitHub Issues
+      4. Orchestrator picks up issues -> spawns remediation Devins
+    """
+    if not DEVIN_API_KEY:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "DEVIN_API_KEY is not configured"},
+        )
+    if not DEVIN_ORG_ID:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "DEVIN_ORG_ID is not configured"},
+        )
+
+    available_categories = list(VULNERABILITY_CATEGORIES.keys())
+    selected = req.categories or []
+    # Validate categories
+    invalid = [c for c in selected if c not in VULNERABILITY_CATEGORIES]
+    if invalid:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown categories: {invalid}", "valid": available_categories},
+        )
+
+    bug_specs = plan_bugs(
+        categories=selected,
+        count=req.count,
+        target_repo=req.repo,
+    )
+
+    sessions = spawn_baby_devins(
+        bug_specs,
+        api_key=DEVIN_API_KEY,
+        org_id=DEVIN_ORG_ID,
+        playbook_id=ADVERSARIAL_PLAYBOOK_ID,
+        max_concurrent=req.count,
+    )
+
+    # Persist to disk for reference
+    result = {
+        "plan": bug_specs,
+        "sessions": sessions,
+        "target_repo": req.repo,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    output_path = DATA_DIR / "adversarial_plan.json"
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=2)
+
+    spawned = sum(1 for s in sessions if s["status"] == "spawned")
+    failed = sum(1 for s in sessions if s["status"] == "failed_to_spawn")
+
+    return {
+        "message": f"Spawned {spawned} baby Devin sessions ({failed} failed)",
+        "spawned": spawned,
+        "failed": failed,
+        "sessions": sessions,
+        "available_categories": available_categories,
+    }
+
+
+@app.get("/api/simulate/categories")
+async def simulate_categories() -> dict[str, Any]:
+    """Return available vulnerability categories for the simulate form."""
+    cats = []
+    for key, info in VULNERABILITY_CATEGORIES.items():
+        cats.append({
+            "id": key,
+            "name": key.replace("_", " ").title(),
+            "cwe_id": info["cwe_id"],
+            "severity": info["severity"],
+            "pattern_count": len(info["patterns"]),
+        })
+    return {"categories": cats}
 
 
 
