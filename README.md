@@ -227,7 +227,7 @@ vuln-remediation-system/
 │   ├── remediate.yml                  # Trigger Devin remediation sessions
 │   └── test.yml                       # Lint + import checks + unit tests
 │
-├── tests/                             # Unit tests (57 passing)
+├── tests/                             # Unit tests (93 passing)
 ├── data/                              # Runtime data (gitignored)
 ├── docs/
 │   ├── ARCHITECTURE.md                # Detailed system architecture
@@ -297,7 +297,7 @@ VulnerabilityFinding:
 ## Testing
 
 ```bash
-# Run unit tests (57 tests)
+# Run unit tests (93 tests)
 pip install pytest
 python -m pytest tests/ -v
 
