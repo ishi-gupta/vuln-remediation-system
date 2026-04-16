@@ -9,6 +9,16 @@ Event-driven vulnerability remediation system with AI-assisted automation using 
 3. **Triggers Devin AI sessions** to automatically fix the vulnerabilities
 4. **Tracks everything** on a live observability dashboard
 
+## Demo Walkthrough
+
+The system runs in three phases, each triggered from the dashboard at `localhost:8000`:
+
+1. **Empty Dashboard** — Start with a clean slate: 0 findings, 0 issues, 0 active sessions
+2. **Run Scanner** — Click "Run Scanner" to trigger the GitHub Actions `scan.yml` workflow. Bandit + Semgrep + pip-audit + Gitleaks scan `ishi-gupta/superset`, and the issue creator opens GitHub Issues for each finding (with severity labels, CWE/CVE IDs, and remediation advice)
+3. **Trigger Remediation** — Click "Trigger Remediation" to create Devin AI sessions for each open issue. Devin reads the issue, clones the repo, applies a fix, runs tests, and opens a PR that auto-closes the issue via `Fixes #N`
+
+The dashboard updates in real-time: Active Sessions count goes up, the Remediation Status chart shows "In Progress", and the Recent Remediations table populates with issue links and PR URLs as Devin completes each fix.
+
 ## Architecture
 
 ```
