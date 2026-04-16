@@ -127,8 +127,12 @@ def _github_headers() -> dict[str, str]:
     return headers
 
 
-def _fetch_github_issues() -> list[dict[str, Any]]:
-    """Fetch issues from the target GitHub repo."""
+def _fetch_github_issues(state: str = "all") -> list[dict[str, Any]]:
+    """Fetch issues from the target GitHub repo.
+
+    Args:
+        state: Issue state filter — "open", "closed", or "all" (default).
+    """
     if not GITHUB_TOKEN:
         return []
 
@@ -139,7 +143,7 @@ def _fetch_github_issues() -> list[dict[str, Any]]:
     while True:
         url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/issues"
         params = {
-            "state": "open",
+            "state": state,
             "labels": "security,automated",
             "per_page": per_page,
             "page": page,
@@ -190,6 +194,226 @@ def _fetch_github_issues() -> list[dict[str, Any]]:
     return issues
 
 
+def _fetch_scan_workflow_runs(limit: int = 50) -> list[dict[str, Any]]:
+    """Fetch scan.yml workflow runs from GitHub Actions API.
+
+    Each run represents a scan execution.  Returns newest-first.
+    """
+    if not GITHUB_TOKEN:
+        return []
+
+    runs: list[dict[str, Any]] = []
+    page = 1
+    per_page = min(limit, 100)
+
+    while len(runs) < limit:
+        url = f"{GITHUB_API_BASE}/repos/{ENGINE_REPO}/actions/workflows/scan.yml/runs"
+        params = {"per_page": per_page, "page": page}
+        try:
+            resp = requests.get(url, headers=_github_headers(), params=params, timeout=15)
+            resp.raise_for_status()
+            batch = resp.json().get("workflow_runs", [])
+        except Exception:
+            logger.exception("Failed to fetch workflow runs (page %d)", page)
+            break
+
+        if not batch:
+            break
+
+        for run in batch:
+            runs.append({
+                "run_id": run["id"],
+                "status": run["status"],
+                "conclusion": run.get("conclusion"),
+                "created_at": run["created_at"],
+                "updated_at": run["updated_at"],
+                "event": run.get("event", ""),
+                "url": run["html_url"],
+            })
+            if len(runs) >= limit:
+                break
+
+        if len(batch) < per_page:
+            break
+        page += 1
+
+    return runs
+
+
+def _derive_scan_history(all_issues: list[dict[str, Any]], workflow_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Derive scan history by matching workflow runs with issues created around that time.
+
+    Groups issues by the hour they were created to approximate per-scan severity
+    breakdowns, then matches each group to the nearest workflow run.
+    """
+    from collections import defaultdict
+
+    # Group issues by creation hour (YYYY-MM-DD HH)
+    hour_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for issue in all_issues:
+        created = issue.get("created_at", "")
+        if len(created) >= 13:
+            hour_key = created[:13]  # "2026-04-15T19" → bucket by hour
+            hour_buckets[hour_key].append(issue)
+
+    # Build scan history entries from workflow runs
+    scan_history: list[dict[str, Any]] = []
+
+    # If we have workflow runs, use them as the timeline and attach severity counts
+    if workflow_runs:
+        for run in workflow_runs:
+            if run.get("conclusion") != "success":
+                continue
+
+            run_created = run.get("created_at", "")
+            run_hour = run_created[:13] if len(run_created) >= 13 else ""
+
+            # Find issues created within the same hour as this run
+            matched_issues = hour_buckets.get(run_hour, [])
+
+            # Also check the next hour (scan may take a few minutes)
+            if run_hour:
+                try:
+                    dt = datetime.fromisoformat(run_created.replace("Z", "+00:00"))
+                    from datetime import timedelta
+                    next_hour = (dt + timedelta(hours=1)).isoformat()[:13]
+                    matched_issues = matched_issues + hour_buckets.get(next_hour, [])
+                except (ValueError, TypeError):
+                    pass
+
+            severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+            for issue in matched_issues:
+                sev = issue.get("severity", "medium")
+                if sev in severity_counts:
+                    severity_counts[sev] += 1
+
+            scan_history.append({
+                "scan_id": str(run.get("run_id", "")),
+                "timestamp": run_created,
+                "total_findings": len(matched_issues),
+                **severity_counts,
+            })
+    else:
+        # Fallback: derive scan runs purely from issue creation date clusters
+        for hour_key in sorted(hour_buckets.keys()):
+            bucket = hour_buckets[hour_key]
+            severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+            for issue in bucket:
+                sev = issue.get("severity", "medium")
+                if sev in severity_counts:
+                    severity_counts[sev] += 1
+
+            scan_history.append({
+                "scan_id": hour_key,
+                "timestamp": bucket[0].get("created_at", ""),
+                "total_findings": len(bucket),
+                **severity_counts,
+            })
+
+    # Sort chronologically (oldest first for chart display)
+    scan_history.sort(key=lambda x: x.get("timestamp", ""))
+    return scan_history
+
+
+def _fetch_pull_requests(state: str = "all", limit: int = 100) -> list[dict[str, Any]]:
+    """Fetch pull requests from the target Superset repo."""
+    if not GITHUB_TOKEN:
+        return []
+
+    prs: list[dict[str, Any]] = []
+    page = 1
+    per_page = min(limit, 100)
+
+    while len(prs) < limit:
+        url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/pulls"
+        params = {"state": state, "per_page": per_page, "page": page}
+        try:
+            resp = requests.get(url, headers=_github_headers(), params=params, timeout=15)
+            resp.raise_for_status()
+            batch = resp.json()
+        except Exception:
+            logger.exception("Failed to fetch PRs (page %d)", page)
+            break
+
+        if not batch:
+            break
+
+        for pr in batch:
+            prs.append({
+                "number": pr["number"],
+                "title": pr["title"],
+                "state": pr["state"],
+                "merged": pr.get("merged_at") is not None,
+                "branch": pr["head"]["ref"],
+                "url": pr["html_url"],
+                "created_at": pr["created_at"],
+                "updated_at": pr["updated_at"],
+                "merged_at": pr.get("merged_at"),
+            })
+            if len(prs) >= limit:
+                break
+
+        if len(batch) < per_page:
+            break
+        page += 1
+
+    return prs
+
+
+def _derive_remediation_records(
+    all_issues: list[dict[str, Any]],
+    pull_requests: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Derive remediation records from GitHub issues and PRs.
+
+    Matches issues that have `remediation-started` label with fix PRs
+    using the ``fix/issue-N`` branch naming convention.
+    """
+    import re
+
+    # Build a map of issue_number → PR for quick lookup
+    pr_by_issue: dict[int, dict[str, Any]] = {}
+    for pr in pull_requests:
+        branch = pr.get("branch", "")
+        match = re.match(r"fix/issue-(\d+)", branch)
+        if match:
+            issue_num = int(match.group(1))
+            pr_by_issue[issue_num] = pr
+
+    records: list[dict[str, Any]] = []
+    for issue in all_issues:
+        labels = issue.get("labels", [])
+        has_remediation = "remediation-started" in labels
+        remediation_failed = "remediation-failed" in labels
+
+        if not has_remediation and not remediation_failed:
+            continue
+
+        issue_num = issue["number"]
+        pr = pr_by_issue.get(issue_num)
+
+        # Determine status
+        if issue.get("state") == "closed" and not remediation_failed:
+            status = "fixed"
+        elif remediation_failed:
+            status = "failed"
+        else:
+            status = "in_progress"
+
+        records.append({
+            "finding_id": f"gh-issue-{issue_num}",
+            "issue_number": issue_num,
+            "issue_url": issue.get("url", ""),
+            "status": status,
+            "pr_url": pr["url"] if pr else "",
+            "fix_description": pr["title"] if pr else "",
+            "updated_at": issue.get("closed_at") or issue.get("created_at", ""),
+        })
+
+    # Sort by updated_at descending
+    records.sort(key=lambda r: r.get("updated_at", ""), reverse=True)
+    return records
+
 
 # ---------------------------------------------------------------------------
 # API Endpoints
@@ -202,59 +426,56 @@ async def health() -> dict[str, Any]:
 
 @app.get("/api/metrics")
 async def metrics() -> dict[str, Any]:
-    state = _load_state()
+    # All data derived from GitHub API — no state.json dependency for core
+    # metrics.  This ensures the dashboard works even when scanning runs
+    # remotely via GitHub Actions.
+    all_issues = _fetch_github_issues(state="all")
+    workflow_runs = _fetch_scan_workflow_runs(limit=50)
+    pull_requests = _fetch_pull_requests(state="all", limit=100)
 
-    # Derive issue counts from GitHub API (source of truth since scanning
-    # happens via GitHub Actions, not locally)
-    github_issues = _fetch_github_issues()
-    total_findings = len(github_issues)
+    total_findings = len(all_issues)
     issues_created = total_findings
-    active_sessions = len([s for s in state.active_sessions if s.get("status") == "in_progress"])
 
     # Severity breakdown from GitHub issues
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for issue in github_issues:
+    for issue in all_issues:
         sev = issue.get("severity", "medium")
         if sev in severity_breakdown:
             severity_breakdown[sev] += 1
 
-    # Remediation status from GitHub issues
+    # Remediation status derived from issue state + labels
     remediation_status = {"fixed": 0, "partial": 0, "failed": 0, "in_progress": 0, "pending": 0}
-    for issue in github_issues:
-        if issue.get("remediation_failed"):
+    for issue in all_issues:
+        if issue.get("state") == "closed" and not issue.get("remediation_failed"):
+            remediation_status["fixed"] += 1
+        elif issue.get("remediation_failed"):
             remediation_status["failed"] += 1
         elif issue.get("has_remediation"):
             remediation_status["in_progress"] += 1
         else:
             remediation_status["pending"] += 1
 
-    # Success rate
-    total_remediations = sum(remediation_status.values())
+    # Active sessions = issues currently being remediated
+    active_sessions = remediation_status["in_progress"]
+
+    # Success rate based on issues that entered remediation
+    remediated_total = (
+        remediation_status["fixed"]
+        + remediation_status["failed"]
+        + remediation_status["in_progress"]
+    )
     success_rate = 0.0
-    if total_remediations > 0:
-        success_rate = round((remediation_status["fixed"] / total_remediations) * 100, 1)
+    if remediated_total > 0:
+        success_rate = round((remediation_status["fixed"] / remediated_total) * 100, 1)
 
-    # Scan history from state (local records of when scans were triggered)
-    total_scans = len(state.scan_runs)
-    scan_history = []
-    for run in state.scan_runs:
-        scan_history.append({
-            "scan_id": run.get("scan_id", ""),
-            "timestamp": run.get("timestamp", ""),
-            "total_findings": run.get("total_findings", 0),
-            "critical": run.get("critical", 0),
-            "high": run.get("high", 0),
-            "medium": run.get("medium", 0),
-            "low": run.get("low", 0),
-        })
+    # Scan history derived from workflow runs + issue creation clusters
+    scan_history = _derive_scan_history(all_issues, workflow_runs)
 
-    # Recent remediations (last 10)
-    recent_remediations = sorted(
-        state.remediation_records,
-        key=lambda r: r.get("updated_at", ""),
-        reverse=True,
-    )[:10]
+    # Total scans from workflow runs
+    total_scans = len([r for r in workflow_runs if r.get("conclusion") == "success"])
 
+    # Recent remediations derived from GitHub issues + PRs
+    recent_remediations = _derive_remediation_records(all_issues, pull_requests)[:10]
 
     return {
         "overview": {
@@ -273,20 +494,31 @@ async def metrics() -> dict[str, Any]:
 
 @app.get("/api/findings")
 async def findings() -> dict[str, Any]:
-    state = _load_state()
-    return {"findings": state.findings}
+    # Findings are now derived from GitHub issues (the source of truth)
+    all_issues = _fetch_github_issues(state="all")
+    return {"findings": all_issues}
 
 
 @app.get("/api/issues")
 async def issues() -> dict[str, Any]:
-    issue_list = _fetch_github_issues()
+    issue_list = _fetch_github_issues(state="all")
     return {"issues": issue_list}
 
 
 @app.get("/api/sessions")
 async def sessions() -> dict[str, Any]:
-    state = _load_state()
-    return {"sessions": state.active_sessions}
+    # Derive active sessions from issues with remediation-started label
+    all_issues = _fetch_github_issues(state="open")
+    active = [
+        {
+            "issue_number": i["number"],
+            "issue_url": i["url"],
+            "status": "failed" if i.get("remediation_failed") else "in_progress",
+        }
+        for i in all_issues
+        if i.get("has_remediation") or i.get("remediation_failed")
+    ]
+    return {"sessions": active}
 
 
 
