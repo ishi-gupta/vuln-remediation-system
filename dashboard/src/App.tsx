@@ -29,6 +29,7 @@ import {
   Zap,
   Loader2,
   Terminal,
+  X,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,24 @@ interface Job {
   result: Record<string, any> | null;
   error: string | null;
   logs: { time: string; message: string }[];
+}
+
+interface SimulateCategory {
+  id: string;
+  name: string;
+  cwe_id: string;
+  severity: string;
+  pattern_count: number;
+}
+
+interface SimulateSession {
+  bug_id: string;
+  category: string;
+  cwe_id: string;
+  pattern_name: string;
+  session_id: string;
+  session_url: string;
+  status: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +241,55 @@ export default function App() {
     return () => clearInterval(id);
   }, [fetchData]);
 
+  // -- Simulate (Test Buggy PRs) state --------------------------------------
+  const [showSimulate, setShowSimulate] = useState(false);
+  const [simCategories, setSimCategories] = useState<SimulateCategory[]>([]);
+  const [simSelected, setSimSelected] = useState<string[]>([]);
+  const [simCount, setSimCount] = useState(1);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simResult, setSimResult] = useState<{
+    message: string;
+    sessions: SimulateSession[];
+  } | null>(null);
+
+  const openSimulateModal = async () => {
+    setShowSimulate(true);
+    setSimResult(null);
+    setSimLoading(false);
+    try {
+      const res = await fetch("/api/simulate/categories");
+      const data = await res.json();
+      setSimCategories(data.categories ?? []);
+    } catch {
+      setSimCategories([]);
+    }
+  };
+
+  const runSimulation = async () => {
+    setSimLoading(true);
+    setSimResult(null);
+    try {
+      const res = await fetch("/api/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          count: simCount,
+          categories: simSelected.length > 0 ? simSelected : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSimResult({ message: data.error || "Failed", sessions: [] });
+      } else {
+        setSimResult({ message: data.message, sessions: data.sessions ?? [] });
+      }
+    } catch (e) {
+      setSimResult({ message: `Network error: ${e}`, sessions: [] });
+    } finally {
+      setSimLoading(false);
+    }
+  };
+
   const handleScan = async () => {
     await triggerAction("/api/scan");
     setTimeout(fetchData, 1000);
@@ -288,6 +356,14 @@ export default function App() {
               jobType="orchestrate"
             />
 
+            <button
+              onClick={openSimulateModal}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors shadow-lg shadow-red-500/20"
+            >
+              <Zap size={16} />
+              Test Buggy PRs
+            </button>
+
             <div className="w-px h-6 bg-gray-700 mx-1" />
             {lastUpdated && (
               <span className="text-xs text-gray-500">
@@ -329,6 +405,130 @@ export default function App() {
           </>
         )}
       </main>
+
+      {/* Simulate Modal */}
+      {showSimulate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold">Test Buggy PRs</h2>
+              <button
+                onClick={() => setShowSimulate(false)}
+                className="p-1 rounded hover:bg-gray-800 text-gray-400 hover:text-gray-200"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-sm text-gray-400 mb-4">
+              Spawn baby Devin sessions that act as careless engineers, pushing
+              intentionally vulnerable code to trigger the scan → issue → remediation cycle.
+            </p>
+
+            {/* Category selector */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Vulnerability Categories
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {simCategories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    onClick={() =>
+                      setSimSelected((prev) =>
+                        prev.includes(cat.id)
+                          ? prev.filter((c) => c !== cat.id)
+                          : [...prev, cat.id]
+                      )
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      simSelected.includes(cat.id)
+                        ? "bg-indigo-600 border-indigo-500 text-white"
+                        : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-500"
+                    }`}
+                  >
+                    {cat.name} ({cat.cwe_id})
+                  </button>
+                ))}
+              </div>
+              {simSelected.length === 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  None selected — a random category will be chosen
+                </p>
+              )}
+            </div>
+
+            {/* Count */}
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Number of buggy PRs
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={simCount}
+                onChange={(e) => setSimCount(Number(e.target.value) || 1)}
+                className="w-20 px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm"
+              />
+            </div>
+
+            {/* Launch */}
+            <button
+              disabled={simLoading}
+              onClick={runSimulation}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+            >
+              {simLoading ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" /> Spawning…
+                </>
+              ) : (
+                <>
+                  <Zap size={16} /> Launch Buggy PRs
+                </>
+              )}
+            </button>
+
+            {/* Result */}
+            {simResult && (
+              <div className="mt-4 p-3 rounded-lg bg-gray-800 border border-gray-700">
+                <p className="text-sm font-medium text-gray-200 mb-2">
+                  {simResult.message}
+                </p>
+                {simResult.sessions.length > 0 && (
+                  <ul className="space-y-1">
+                    {simResult.sessions.map((s) => (
+                      <li
+                        key={s.bug_id}
+                        className="text-xs text-gray-400 flex items-center gap-2"
+                      >
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            s.status === "spawned"
+                              ? "bg-green-400"
+                              : "bg-red-400"
+                          }`}
+                        />
+                        <span className="text-gray-300">{s.pattern_name}</span>
+                        {s.session_url && (
+                          <a
+                            href={s.session_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-indigo-400 hover:underline ml-auto"
+                          >
+                            View session
+                          </a>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

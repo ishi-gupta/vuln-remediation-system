@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 from datetime import datetime, timezone
@@ -35,7 +36,13 @@ import requests
 from automation.config import (
     DEVIN_API_KEY,
     DEVIN_API_BASE,
+    DEVIN_ORG_ID,
     DATA_DIR,
+)
+
+# Playbook for adversarial baby Devin sessions
+ADVERSARIAL_PLAYBOOK_ID = os.environ.get(
+    "ADVERSARIAL_PLAYBOOK_ID", "playbook-b281fb97e83646bb80ca8686564f7fa9"
 )
 
 logger = logging.getLogger(__name__)
@@ -388,19 +395,32 @@ def generate_baby_devin_prompt(bug_spec: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
-    """Create a Devin session to plant a bug."""
+def create_devin_session(
+    prompt: str,
+    api_key: str,
+    org_id: Optional[str] = None,
+    playbook_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Create a Devin session to plant a bug via the v3 API."""
+    org_id = org_id or DEVIN_ORG_ID
+    if not org_id:
+        logger.error("DEVIN_ORG_ID is required for v3 API.")
+        return None
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    payload = {
+    payload: dict = {
         "prompt": prompt,
     }
 
+    if playbook_id:
+        payload["playbook_id"] = playbook_id
+
     resp = requests.post(
-        f"{DEVIN_API_BASE}/sessions",
+        f"{DEVIN_API_BASE}/organizations/{org_id}/sessions",
         headers=headers,
         json=payload,
         timeout=60,
@@ -420,6 +440,8 @@ def create_devin_session(prompt: str, api_key: str) -> Optional[dict]:
 def spawn_baby_devins(
     bug_specs: list[dict],
     api_key: str,
+    org_id: Optional[str] = None,
+    playbook_id: Optional[str] = None,
     max_concurrent: int = 5,
 ) -> list[dict]:
     """
@@ -448,7 +470,9 @@ def spawn_baby_devins(
             spec["category"],
         )
 
-        session = create_devin_session(prompt, api_key)
+        session = create_devin_session(
+            prompt, api_key, org_id=org_id, playbook_id=playbook_id,
+        )
         if session:
             session_id = session.get("session_id", session.get("id", ""))
             session_url = session.get(
@@ -584,7 +608,11 @@ def main() -> int:
         return 1
 
     sessions = spawn_baby_devins(
-        bug_specs, api_key, max_concurrent=args.max_concurrent
+        bug_specs,
+        api_key,
+        org_id=DEVIN_ORG_ID,
+        playbook_id=ADVERSARIAL_PLAYBOOK_ID,
+        max_concurrent=args.max_concurrent,
     )
 
     # Save results
