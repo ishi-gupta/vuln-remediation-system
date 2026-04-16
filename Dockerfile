@@ -36,7 +36,6 @@ RUN pip install --no-cache-dir -e ".[scanners]" 2>/dev/null || \
 # Copy application code
 COPY automation/ automation/
 COPY dashboard/dist/ dashboard/dist/
-COPY data/ data/
 COPY tests/ tests/
 COPY pyproject.toml .
 
